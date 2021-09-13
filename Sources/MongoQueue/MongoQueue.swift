@@ -119,8 +119,6 @@ public protocol ScheduledTask: _QueuedTask {
     /// The date that you want this to be executed (delay)
     /// If you want it to be immediate, use `Date()`
     var scheduledDate: Date { get }
-    
-    /// If executeBefore is reached, your task gets to choose whether to execute it NOW, or not at all
     var executeBefore: Date? { get }
 }
 
@@ -143,42 +141,160 @@ public struct ScheduledTaskConfiguration: Codable {
 
 // TODO: Recurring Jobs
 
+public protocol RecurringTask: _QueuedTask {
+    
+}
+
 // - MARK: Global API
 
 public enum MongoQueueError: Error {
+    public enum TaskExecutionReason {
+        case failedToClaim
+        case taskError(Error)
+    }
+    
     case taskCreationFailed
+    case taskExecutionFailed(reason: TaskExecutionReason)
+    case unknownTaskCategory
+    case reschedulingFailedTaskFailed
+    case dequeueTaskFailed
 }
 
-public struct MongoQueue {
-    private let collection: MongoCollection.Async
-    private var knownTypes: [_QueuedTask.Type]
+struct KnownType {
+    let category: String
+    let executeTask: (inout Task) async throws -> ()
     
-    public init(collection: MongoCollection, taskTypes: _QueuedTask.Type...) {
-        self.collection = collection.async
-        self.knownTypes = taskTypes
+    init<T: _QueuedTask>(
+        type: T.Type,
+        collection: MongoCollection.Async
+    ) {
+        self.category = type.category
+        self.executeTask = { task in
+            try await KnownType.executeTask(
+                &task,
+                collection: collection,
+                ofType: type
+            )
+        }
     }
     
-    public init(collection: MongoCollection, taskTypes: [_QueuedTask.Type]) {
-        self.collection = collection.async
-        self.knownTypes = taskTypes
-    }
-    
-    public init(collection: MongoCollection.Async, taskTypes: _QueuedTask.Type...) {
-        self.collection = collection
-        self.knownTypes = taskTypes
-    }
-    
-    public init(collection: MongoCollection.Async, taskTypes: [_QueuedTask.Type]) {
-        self.collection = collection
-        self.knownTypes = taskTypes
-    }
-    
-    public func suspendTasks<T: _QueuedTask>(ofType type: T.Type, where filter: Document = [:]) async throws {
+    private static func executeTask<T: _QueuedTask>(
+        _ task: inout Task,
+        collection: MongoCollection.Async,
+        ofType type: T.Type
+    ) async throws {
+        task.status = .executing
+        guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
+            throw MongoQueueError.taskExecutionFailed(reason: .failedToClaim)
+        }
         
+        let metadata = try BSONDecoder().decode(type, from: task.metadata)
+        
+        switch try task.readConfiguration().value {
+        case .scheduled(let task):
+            if let executeBefore = task.executeBefore, executeBefore < Date() {
+                // Task didn't execute
+                return
+            }
+        }
+        
+        do {
+            task.attempts += 1
+            try await metadata.execute()
+            // TODO: We assume this succeeds, but what if it does not?
+            _ = try? await collection.deleteOne(where: "_id" == task._id)
+            return
+        } catch {
+            let onFailure = try await metadata.onExecutionFailure(totalAttempts: task.attempts)
+            
+            switch onFailure.raw {
+            case .dequeue:
+                guard try await collection.deleteOne(where: "_id" == task._id).deletes == 1 else {
+                    throw MongoQueueError.dequeueTaskFailed
+                }
+            case .retry(maxAttempts: let maxAttempts):
+                if let maxAttempts = maxAttempts, task.attempts >= maxAttempts {
+                    guard try await collection.deleteOne(where: "_id" == task._id).deletes == 1 else {
+                        throw MongoQueueError.dequeueTaskFailed
+                    }
+                } else {
+                    guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
+                        throw MongoQueueError.reschedulingFailedTaskFailed
+                    }
+                }
+            case .retryAfter(let nextInterval, maxAttempts: let maxAttempts):
+                if let maxAttempts = maxAttempts, task.attempts >= maxAttempts {
+                    try await collection.deleteOne(where: "_id" == task._id)
+                } else {
+                    task.executeAfter = Date().addingTimeInterval(nextInterval)
+                }
+            }
+            
+            // Throw the initial error
+            throw error
+        }
+    }
+}
+
+public final class MongoQueue {
+    private let collection: MongoCollection.Async
+    private var knownTypes = [KnownType]()
+    
+    public init(collection: MongoCollection) {
+        self.collection = collection.async
+    }
+    
+    public init(collection: MongoCollection.Async) {
+        self.collection = collection
+    }
+    
+    public func registerTask<T: _QueuedTask>(_ type: T.Type) {
+        knownTypes.append(KnownType(type: type, collection: collection))
+    }
+    
+    @discardableResult
+    public func suspendTasks<T: _QueuedTask>(ofType type: T.Type, where filter: Document = [:]) async throws -> UpdateReply {
+        try await collection.updateMany(
+            where: [
+                "status": TaskStatus.scheduled.raw.rawValue,
+                "metadata": filter
+            ],
+             setting: [
+                "status": TaskStatus.suspended.raw.rawValue
+             ],
+             unsetting: nil
+        )
+    }
+    
+    @discardableResult
+    public func unsuspendTasks<T: _QueuedTask>(ofType type: T.Type, where filter: Document = [:]) async throws -> UpdateReply {
+        try await collection.updateMany(
+            where: [
+                "status": TaskStatus.suspended.raw.rawValue,
+                "metadata": filter
+            ],
+             setting: [
+                "status": TaskStatus.scheduled.raw.rawValue
+             ],
+             unsetting: nil
+        )
+    }
+    
+    @discardableResult
+    public func suspendTasks<T: _QueuedTask, Q: MongoKittenQuery>(ofType type: T.Type, where filter: Q) async throws -> UpdateReply {
+        try await suspendTasks(ofType: type, where: filter.makeDocument())
+    }
+    
+    internal func _executeTask(_ task: inout Task) async throws {
+        guard let knownType = knownTypes.first(where: { $0.category == task.category }) else {
+            throw MongoQueueError.unknownTaskCategory
+        }
+        
+        try await knownType.executeTask(&task)
     }
     
     public func queueTask<T: _QueuedTask>(_ task: T) async throws {
-        assert(knownTypes.contains(where: { ObjectIdentifier(T.self) == ObjectIdentifier($0) }))
+        assert(knownTypes.contains(where: { $0.category == T.category }))
         
         let model = try Task(representing: task)
         // TODO: WriteConcern majority
@@ -189,7 +305,7 @@ public struct MongoQueue {
     }
 }
 
-internal struct Task: Model {
+internal struct Task: Codable {
     let _id: ObjectId
     
     /// Contains `Task.name`
