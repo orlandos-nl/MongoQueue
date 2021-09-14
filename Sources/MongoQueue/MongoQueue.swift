@@ -370,7 +370,7 @@ public final class MongoQueue {
     }
     
     // TODO: ReadConcern majority in >= MongoDB 4.2
-    func start() throws {
+    public func start() throws {
         if started {
             throw MongoQueueError.alreadyStarted
         }
