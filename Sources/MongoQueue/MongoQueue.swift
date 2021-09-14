@@ -1,3 +1,4 @@
+import MongoCore
 import Foundation
 import Meow
 
@@ -17,7 +18,13 @@ public protocol _QueuedTask: Codable {
     /// An internal configuration object that MongoQueue uses to pass around internal metadata
     var configuration: _TaskConfiguration { get }
     
+    /// The expected maximum duration of this task, defaults to 10 minutes
     var maxTaskDuration: TimeInterval { get }
+    
+    /// If a task is light & quick, you can enable paralellisation. A single worker can execute many parallelised tasks simultaneously.
+    ///
+    /// Defaults to `false`
+//    var allowsParallelisation: Bool { get }
     
     /// Executes the task using the available metadata stored in `self`
     func execute() async throws
@@ -33,6 +40,7 @@ extension _QueuedTask {
     public static var category: String { String(describing: Self.self) }
     public var priority: TaskPriority { .normal }
     public var maxTaskDuration: TimeInterval { 10 * 60 }
+//    public var allowsParallelisation: Bool { false }
 }
 
 public struct TaskExecutionFailureAction {
@@ -153,6 +161,7 @@ public enum MongoQueueError: Error {
         case taskError(Error)
     }
     
+    case alreadyStarted
     case taskCreationFailed
     case taskExecutionFailed(reason: TaskExecutionReason)
     case unknownTaskCategory
@@ -160,9 +169,9 @@ public enum MongoQueueError: Error {
     case dequeueTaskFailed
 }
 
-struct KnownType {
+internal struct KnownType {
     let category: String
-    let executeTask: (inout Task) async throws -> ()
+    let executeTask: (inout TaskModel) async throws -> ()
     
     init<T: _QueuedTask>(
         type: T.Type,
@@ -179,10 +188,14 @@ struct KnownType {
     }
     
     private static func executeTask<T: _QueuedTask>(
-        _ task: inout Task,
+        _ task: inout TaskModel,
         collection: MongoCollection.Async,
         ofType type: T.Type
     ) async throws {
+        // TODO: WriteConcern majority
+//        var writeConcern = WriteConcern()
+//        writeConcern.acknowledgement = .majority
+        
         task.status = .executing
         guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
             throw MongoQueueError.taskExecutionFailed(reason: .failedToClaim)
@@ -236,9 +249,32 @@ struct KnownType {
     }
 }
 
+enum TaskExecutionResult {
+    case noneExecuted
+    case taskSuccessful
+    case taskFailure(Error)
+}
+
 public final class MongoQueue {
+//    private final actor ExecutingTasks {
+//        var runningTasks = 0
+//
+//        func increment() {
+//            runningTasks += 1
+//        }
+//
+//        func decrement() {
+//            runningTasks -= 1
+//            assert(runningTasks >= 0)
+//        }
+//    }
+    
     private let collection: MongoCollection.Async
     private var knownTypes = [KnownType]()
+    private var started = false
+    private var serverHasData = true
+    public var pollingFrequencyMs: Int = 5000
+//    private let executingTasks = ExecutingTasks()
     
     public init(collection: MongoCollection) {
         self.collection = collection.async
@@ -285,19 +321,160 @@ public final class MongoQueue {
         try await suspendTasks(ofType: type, where: filter.makeDocument())
     }
     
-    internal func _executeTask(_ task: inout Task) async throws {
+    @discardableResult
+    public func unsuspendTasks<T: _QueuedTask, Q: MongoKittenQuery>(ofType type: T.Type, where filter: Q) async throws -> UpdateReply {
+        try await unsuspendTasks(ofType: type, where: filter.makeDocument())
+    }
+    
+    func runNextTask() async throws -> TaskExecutionResult {
+        let context = try BSONEncoder().encode(TaskModel.ExecutingContext())
+        var writeConcern = WriteConcern()
+        writeConcern.acknowledgement = .majority
+        
+        let reply = try await collection.nio.findOneAndUpdate(
+            where: [
+                "status": TaskStatus.scheduled.raw.rawValue,
+            ],
+                 to: [
+                    "$set": [
+                        "status": TaskStatus.executing.raw.rawValue,
+                        "execution": context
+                    ] as Document
+                 ],
+                 returnValue: .modified
+        )
+            .sort([
+                "priority": .descending,
+                "creationDate": .ascending
+            ])
+            .writeConcern(writeConcern)
+            .execute()
+            .get()
+        
+        guard let taskDocument = reply.value else {
+            // No task found
+            return .noneExecuted
+        }
+        
+        var task = try BSONDecoder().decode(TaskModel.self, from: taskDocument)
         guard let knownType = knownTypes.first(where: { $0.category == task.category }) else {
             throw MongoQueueError.unknownTaskCategory
         }
         
-        try await knownType.executeTask(&task)
+        do {
+            try await knownType.executeTask(&task)
+            return .taskSuccessful
+        } catch {
+            return .taskFailure(error)
+        }
+    }
+    
+    // TODO: ReadConcern majority in >= MongoDB 4.2
+    func start() throws {
+        if started {
+            throw MongoQueueError.alreadyStarted
+        }
+        
+        started = true
+        
+        if let wireVersion = collection.nio.database.pool.wireVersion, wireVersion.supportsCollectionChangeStream {
+            Task.detached {
+                try await self.startChangeStreamTicks()
+            }
+        } else {
+            Task.detached {
+                try await self.runNextTask()
+            }
+        }
+    }
+    
+    private func startChangeStreamTicks() async throws {
+        // Using change stream cursor based polling
+        var options = ChangeStreamOptions()
+        options.maxAwaitTimeMS = 50
+        var cursor = try await collection.watch(options: options, as: TaskModel.self)
+        cursor.setGetMoreInterval(to: .seconds(5))
+        cursor.forEach { change in
+            if change.operationType == .insert || change.operationType == .update || change.operationType == .replace {
+                // Dataset changed, retry
+                if self.serverHasData {
+                    self.serverHasData = true
+                    Task.detached {
+                        try await self.cursorInitiatedTick()
+                    }
+                }
+            }
+            
+            return self.started
+        }
+        
+        Task.detached {
+            try await self.cursorInitiatedTick()
+        }
+        
+        do {
+            // Ideally, this is where we stay
+            try await cursor.awaitClose()
+        } catch {}
+        
+        if self.started {
+            // Restart Change Stream
+            try await startChangeStreamTicks()
+        }
+    }
+    
+    private func cursorInitiatedTick() async throws {
+        do {
+            switch try await self.runNextTask() {
+            case .taskSuccessful, .taskFailure:
+                Task.detached {
+                    try await self.cursorInitiatedTick()
+                }
+            case .noneExecuted:
+                serverHasData = false
+            }
+        } catch {
+            // Task execution failed due to a MongoDB error
+            // Otherwise the return type would specify the task status
+            serverHasData = false
+        }
+    }
+    
+    private func sleepBasedTick() async throws {
+        if !started {
+            return
+        }
+        
+        if !serverHasData {
+            await Task.sleep(UInt64(pollingFrequencyMs) * 1_000_000)
+        }
+        
+        do {
+            if case .noneExecuted = try await self.runNextTask() {
+                serverHasData = false
+            } else {
+                serverHasData = true
+            }
+        } catch {
+            // Task execution failed due to a MongoDB error
+            // Otherwise the return type would specify the task status
+            serverHasData = false
+        }
+        
+        Task.detached {
+            try await self.sleepBasedTick()
+        }
     }
     
     public func queueTask<T: _QueuedTask>(_ task: T) async throws {
         assert(knownTypes.contains(where: { $0.category == T.category }))
         
-        let model = try Task(representing: task)
+        let model = try TaskModel(representing: task)
+        
         // TODO: WriteConcern majority
+//        var writeConcern = WriteConcern()
+//        writeConcern.acknowledgement = .majority
+        
         let reply = try await collection.insertEncoded(model)
         guard reply.insertCount == 1 else {
             throw MongoQueueError.taskCreationFailed
@@ -305,7 +482,7 @@ public final class MongoQueue {
     }
 }
 
-internal struct Task: Codable {
+internal struct TaskModel: Codable {
     let _id: ObjectId
     
     /// Contains `Task.name`
@@ -343,6 +520,7 @@ internal struct Task: Codable {
     
     var execution: ExecutingContext?
     let maxTaskDuration: TimeInterval
+//    let allowsParallelisation: Bool
     
     private enum ConfigurationType: String, Codable {
         case scheduled
@@ -360,6 +538,7 @@ internal struct Task: Codable {
         self.status = .scheduled
         self.metadata = try BSONEncoder().encode(task)
         self.maxTaskDuration = task.maxTaskDuration
+//        self.allowsParallelisation = task.allowsParallelisation
         
         switch task.configuration.value {
         case .scheduled(let configuration):
