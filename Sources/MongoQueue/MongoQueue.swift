@@ -273,7 +273,7 @@ public final class MongoQueue {
     private var knownTypes = [KnownType]()
     private var started = false
     private var serverHasData = true
-    public var pollingFrequencyMs: Int = 5000
+    public var pollingFrequencyMs: Int = 1000
 //    private let executingTasks = ExecutingTasks()
     
     public init(collection: MongoCollection) {
@@ -393,7 +393,7 @@ public final class MongoQueue {
         var options = ChangeStreamOptions()
         options.maxAwaitTimeMS = 50
         var cursor = try await collection.watch(options: options, as: TaskModel.self)
-        cursor.setGetMoreInterval(to: .seconds(5))
+        cursor.setGetMoreInterval(to: .milliseconds(Int64(self.pollingFrequencyMs)))
         cursor.forEach { change in
             if change.operationType == .insert || change.operationType == .update || change.operationType == .replace {
                 // Dataset changed, retry
