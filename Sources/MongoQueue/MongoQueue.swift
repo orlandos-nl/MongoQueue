@@ -383,7 +383,7 @@ public final class MongoQueue {
             }
         } else {
             Task.detached {
-                try await self.runNextTask()
+                try await self.sleepBasedTick()
             }
         }
     }
