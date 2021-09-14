@@ -1,6 +1,14 @@
+import Logging
 import MongoCore
 import Foundation
 import Meow
+
+public struct QueuedTaskFailure<Context> {
+    public let executionContext: Context
+    public let error: Error
+    public let attemptsMade: Int
+    public let taskId: ObjectId
+}
 
 /// A QueuedTask is a Codable type that can execute the metadata it carries
 ///
@@ -8,6 +16,8 @@ import Meow
 ///
 /// You cannot implement `_QueuedTask` yourself, but instead need to implement one of the derived protocols
 public protocol _QueuedTask: Codable {
+    associatedtype ExecutionContext
+    
     /// The type of task being scheduled, defaults to your `Task.Type` name
     static var category: String { get }
     
@@ -27,13 +37,13 @@ public protocol _QueuedTask: Codable {
 //    var allowsParallelisation: Bool { get }
     
     /// Executes the task using the available metadata stored in `self`
-    func execute() async throws
+    func execute(withContext context: ExecutionContext) async throws
     
     /// Called when the task failed to execute. Provides an opportunity to decide the fate of this task
     ///
     /// - Parameters:
     ///     - totalAttempts: The amount of attempts thus far, including the failed one`
-    func onExecutionFailure(totalAttempts: Int) async throws -> TaskExecutionFailureAction
+    func onExecutionFailure(failureContext: QueuedTaskFailure<ExecutionContext>) async throws -> TaskExecutionFailureAction
 }
 
 extension _QueuedTask {
@@ -175,14 +185,18 @@ internal struct KnownType {
     
     init<T: _QueuedTask>(
         type: T.Type,
-        collection: MongoCollection.Async
+        collection: MongoCollection.Async,
+        logger: Logger,
+        context: T.ExecutionContext
     ) {
         self.category = type.category
         self.executeTask = { task in
             try await KnownType.executeTask(
                 &task,
                 collection: collection,
-                ofType: type
+                logger: logger,
+                ofType: type,
+                context: context
             )
         }
     }
@@ -190,7 +204,9 @@ internal struct KnownType {
     private static func executeTask<T: _QueuedTask>(
         _ task: inout TaskModel,
         collection: MongoCollection.Async,
-        ofType type: T.Type
+        logger: Logger,
+        ofType type: T.Type,
+        context: T.ExecutionContext
     ) async throws {
         // TODO: WriteConcern majority
 //        var writeConcern = WriteConcern()
@@ -204,21 +220,37 @@ internal struct KnownType {
         let metadata = try BSONDecoder().decode(type, from: task.metadata)
         
         switch try task.readConfiguration().value {
-        case .scheduled(let task):
-            if let executeBefore = task.executeBefore, executeBefore < Date() {
-                // Task didn't execute
+        case .scheduled(let scheduleConfig):
+            if let executeBefore = scheduleConfig.executeBefore, executeBefore < Date() {
+                logger.info("Task of category \"\(T.category)\" expired and will not be executed")
+                do {
+                    // TODO: We assume this succeeds, but what if it does not?
+                    _ = try await collection.deleteOne(where: "_id" == task._id)
+                } catch {
+                    logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
+                }
                 return
             }
         }
         
         do {
             task.attempts += 1
-            try await metadata.execute()
-            // TODO: We assume this succeeds, but what if it does not?
-            _ = try? await collection.deleteOne(where: "_id" == task._id)
-            return
+            try await metadata.execute(withContext: context)
+            do {
+                // TODO: We assume this succeeds, but what if it does not?
+                _ = try await collection.deleteOne(where: "_id" == task._id)
+            } catch {
+                logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
+            }
         } catch {
-            let onFailure = try await metadata.onExecutionFailure(totalAttempts: task.attempts)
+            logger.error("Execution failure for task \(task._id) in category \"\(T.category))\": \(error.localizedDescription)")
+            let failureContext = QueuedTaskFailure(
+                executionContext: context,
+                error: error,
+                attemptsMade: task.attempts,
+                taskId: task._id
+            )
+            let onFailure = try await metadata.onExecutionFailure(failureContext: failureContext)
             
             switch onFailure.raw {
             case .dequeue:
@@ -255,6 +287,7 @@ enum TaskExecutionResult {
     case taskFailure(Error)
 }
 
+// TODO: ReadConcern majority in >= MongoDB 4.2
 public final class MongoQueue {
 //    private final actor ExecutingTasks {
 //        var runningTasks = 0
@@ -270,6 +303,7 @@ public final class MongoQueue {
 //    }
     
     private let collection: MongoCollection.Async
+    private let logger: Logger
     private var knownTypes = [KnownType]()
     private var started = false
     private var serverHasData = true
@@ -278,14 +312,19 @@ public final class MongoQueue {
     
     public init(collection: MongoCollection) {
         self.collection = collection.async
+        self.logger = Logger(label: "org.openkitten.mongo-queues")
     }
     
     public init(collection: MongoCollection.Async) {
         self.collection = collection
+        self.logger = Logger(label: "org.openkitten.mongo-queues")
     }
     
-    public func registerTask<T: _QueuedTask>(_ type: T.Type) {
-        knownTypes.append(KnownType(type: type, collection: collection))
+    public func registerTask<T: _QueuedTask>(
+        _ type: T.Type,
+        context: T.ExecutionContext
+    ) {
+        knownTypes.append(KnownType(type: type, collection: collection, logger: logger, context: context))
     }
     
     @discardableResult
@@ -369,8 +408,17 @@ public final class MongoQueue {
         }
     }
     
-    // TODO: ReadConcern majority in >= MongoDB 4.2
-    public func start() throws {
+    public func runInBackground() throws {
+        if started {
+            throw MongoQueueError.alreadyStarted
+        }
+        
+        Task.detached {
+            try await self.run()
+        }
+    }
+    
+    public func run() async throws {
         if started {
             throw MongoQueueError.alreadyStarted
         }
@@ -378,13 +426,9 @@ public final class MongoQueue {
         started = true
         
         if let wireVersion = collection.nio.database.pool.wireVersion, wireVersion.supportsCollectionChangeStream {
-            Task.detached {
-                try await self.startChangeStreamTicks()
-            }
+            try await self.startChangeStreamTicks()
         } else {
-            Task.detached {
-                try await self.sleepBasedTick()
-            }
+            try await self.sleepBasedTick()
         }
     }
     
