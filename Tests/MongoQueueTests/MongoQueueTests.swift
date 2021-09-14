@@ -3,18 +3,22 @@ import MongoKitten
 @testable import MongoQueue
 
 final class MongoQueueTests: XCTestCase {
+    static var ranTasks = 0
+    
     func testExample() async throws {
         let db = try MongoDatabase.synchronousConnect("mongodb://localhost/queues")
         let queue = MongoQueue(collection: db["tasks"])
         queue.registerTask(_Task.self, context: ())
-        try await queue.queueTask(_Task(message: "Test0"))
+        try await queue.queueTask(_Task(message: 0))
         try queue.runInBackground()
-        try await queue.queueTask(_Task(message: "Test1"))
-        try await queue.queueTask(_Task(message: "Test2"))
-        try await queue.queueTask(_Task(message: "Test3"))
+        try await queue.queueTask(_Task(message: 1))
+        try await queue.queueTask(_Task(message: 2))
+        try await queue.queueTask(_Task(message: 3))
         
         // Sleep 5 sec
-        await Task.sleep(5_000_000_000)
+        await Task.sleep(500_000_000)
+        
+        XCTAssertEqual(Self.ranTasks, 4)
     }
 }
 
@@ -23,10 +27,11 @@ struct _Task: ScheduledTask {
         Date()
     }
     
-    let message: String
+    let message: Int
     
     func execute(withContext context: Void) async throws {
-        print(message)
+        XCTAssertEqual(MongoQueueTests.ranTasks, message)
+        MongoQueueTests.ranTasks += 1
     }
     
     func onExecutionFailure(failureContext: QueuedTaskFailure<()>) async throws -> TaskExecutionFailureAction {
