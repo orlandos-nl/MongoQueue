@@ -181,7 +181,7 @@ public enum MongoQueueError: Error {
 
 internal struct KnownType {
     let category: String
-    let executeTask: (inout TaskModel) async throws -> ()
+    let performTask: (inout TaskModel) async throws -> ()
     
     init<T: _QueuedTask>(
         type: T.Type,
@@ -190,8 +190,8 @@ internal struct KnownType {
         context: T.ExecutionContext
     ) {
         self.category = type.category
-        self.executeTask = { task in
-            try await KnownType.executeTask(
+        self.performTask = { task in
+            try await KnownType.performTask(
                 &task,
                 collection: collection,
                 logger: logger,
@@ -201,22 +201,13 @@ internal struct KnownType {
         }
     }
     
-    private static func executeTask<T: _QueuedTask>(
+    private static func performTask<T: _QueuedTask>(
         _ task: inout TaskModel,
         collection: MongoCollection.Async,
         logger: Logger,
         ofType type: T.Type,
         context: T.ExecutionContext
     ) async throws {
-        // TODO: WriteConcern majority
-//        var writeConcern = WriteConcern()
-//        writeConcern.acknowledgement = .majority
-        
-        task.status = .executing
-        guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
-            throw MongoQueueError.taskExecutionFailed(reason: .failedToClaim)
-        }
-        
         let metadata = try BSONDecoder().decode(type, from: task.metadata)
         
         switch try task.readConfiguration().value {
@@ -235,7 +226,28 @@ internal struct KnownType {
         
         do {
             task.attempts += 1
+            let taskId = task._id
+            assert(task.maxTaskDuration >= 30, "maxTaskDuration is set unreasonably low in catrgory \(task.category): \(task.maxTaskDuration)")
+            
+            // We're early on the updates, so that we don't get dequeued
+            let interval = Swift.max(task.maxTaskDuration - 15, 1)
+            let executionUpdates = collection.nio.eventLoop.scheduleRepeatedAsyncTask(
+                initialDelay: .seconds(Int64(interval)),
+                delay: .seconds(Int64(interval)),
+                notifying: nil
+            ) { executionUpdates in
+                collection.nio.findOneAndUpdate(
+                    where: "_id" == taskId  ,
+                    to: [
+                        "$set": [
+                            "execution.lastUpdate": Date()
+                        ]
+                    ]
+                ).execute().map { _ in }
+            }
+            
             try await metadata.execute(withContext: context)
+            executionUpdates.cancel()
             do {
                 // TODO: We assume this succeeds, but what if it does not?
                 _ = try await collection.deleteOne(where: "_id" == task._id)
@@ -307,7 +319,9 @@ public final class MongoQueue {
     private var knownTypes = [KnownType]()
     private var started = false
     private var serverHasData = true
-    public var pollingFrequencyMs: Int = 1000
+    private var task: RepeatedTask?
+    public var newTaskPollingFrequency = NIO.TimeAmount.milliseconds(1000)
+    public var stalledTaskPollingFrequency = NIO.TimeAmount.seconds(30)
 //    private let executingTasks = ExecutingTasks()
     
     public init(collection: MongoCollection) {
@@ -370,10 +384,12 @@ public final class MongoQueue {
         var writeConcern = WriteConcern()
         writeConcern.acknowledgement = .majority
         
+        var filter: Document = "status" == TaskStatus.scheduled.raw.rawValue
+        let executeAfterFilter: OrQuery = "executeAfter" == nil || "executeAfter" <= Date()
+        filter = (filter && executeAfterFilter).makeDocument()
+        
         let reply = try await collection.nio.findOneAndUpdate(
-            where: [
-                "status": TaskStatus.scheduled.raw.rawValue,
-            ],
+            where: filter,
                  to: [
                     "$set": [
                         "status": TaskStatus.executing.raw.rawValue,
@@ -381,9 +397,10 @@ public final class MongoQueue {
                     ] as Document
                  ],
                  returnValue: .modified
-        )
+            )
             .sort([
                 "priority": .descending,
+                "executeBefore": .ascending,
                 "creationDate": .ascending
             ])
             .writeConcern(writeConcern)
@@ -401,7 +418,7 @@ public final class MongoQueue {
         }
         
         do {
-            try await knownType.executeTask(&task)
+            try await knownType.performTask(&task)
             return .taskSuccessful
         } catch {
             return .taskFailure(error)
@@ -425,6 +442,23 @@ public final class MongoQueue {
         
         started = true
         
+        let eventLoop = collection.nio.eventLoop
+        task = collection.nio.eventLoop.scheduleRepeatedAsyncTask(
+            initialDelay: stalledTaskPollingFrequency,
+            delay: .seconds(0),
+            notifying: nil
+        ) { [weak self, eventLoop] task in
+            if let queue = self {
+                let promise = eventLoop.makePromise(of: Void.self)
+                promise.completeWithTask {
+                    try await queue.findAndRequeueStaleTasks()
+                }
+                return promise.futureResult
+            } else {
+                return eventLoop.makeSucceededVoidFuture()
+            }
+        }
+        
         if let wireVersion = collection.nio.database.pool.wireVersion, wireVersion.supportsCollectionChangeStream {
             try await self.startChangeStreamTicks()
         } else {
@@ -437,7 +471,7 @@ public final class MongoQueue {
         var options = ChangeStreamOptions()
         options.maxAwaitTimeMS = 50
         var cursor = try await collection.watch(options: options, as: TaskModel.self)
-        cursor.setGetMoreInterval(to: .milliseconds(Int64(self.pollingFrequencyMs)))
+        cursor.setGetMoreInterval(to: newTaskPollingFrequency)
         cursor.forEach { change in
             if change.operationType == .insert || change.operationType == .update || change.operationType == .replace {
                 // Dataset changed, retry
@@ -490,7 +524,7 @@ public final class MongoQueue {
         }
         
         if !serverHasData {
-            await Task.sleep(UInt64(pollingFrequencyMs) * 1_000_000)
+            await Task.sleep(UInt64(newTaskPollingFrequency.nanoseconds))
         }
         
         do {
@@ -522,6 +556,28 @@ public final class MongoQueue {
         let reply = try await collection.insertEncoded(model)
         guard reply.insertCount == 1 else {
             throw MongoQueueError.taskCreationFailed
+        }
+    }
+    
+    private func findAndRequeueStaleTasks() async throws {
+        for type in knownTypes {
+            let executingTasks = try await collection.find(
+                "category" == type.category && "status" == TaskStatus.executing.raw.rawValue
+            ).decode(TaskModel.self).execute().get()
+            
+            for try await task in executingTasks {
+                if
+                    let lastUpdateDate = task.execution?.lastUpdate,
+                    lastUpdateDate.addingTimeInterval(task.maxTaskDuration) <= Date()
+                {
+                    _ = try await collection.findOneAndUpdate(where: "_id" == task._id, to: [
+                        "$set": [
+                            "status": TaskStatus.scheduled.raw.rawValue,
+                            "execution": Null()
+                        ] as Document
+                    ]).execute()
+                }
+            }
         }
     }
 }
@@ -574,6 +630,8 @@ internal struct TaskModel: Codable {
     private let configuration: Document
     
     init<T: _QueuedTask>(representing task: T) throws {
+        assert(task.maxTaskDuration >= 30, "maxTaskDuration is set unreasonably low in catrgory \(T.category): \(task.maxTaskDuration)")
+        
         self._id = ObjectId()
         self.category = T.category
         self.priority = task.priority.raw
@@ -582,7 +640,6 @@ internal struct TaskModel: Codable {
         self.status = .scheduled
         self.metadata = try BSONEncoder().encode(task)
         self.maxTaskDuration = task.maxTaskDuration
-//        self.allowsParallelisation = task.allowsParallelisation
         
         switch task.configuration.value {
         case .scheduled(let configuration):
