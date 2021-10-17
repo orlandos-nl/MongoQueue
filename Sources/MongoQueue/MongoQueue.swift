@@ -622,6 +622,7 @@ public final class MongoQueue {
                     let lastUpdateDate = task.execution?.lastUpdate,
                     lastUpdateDate.addingTimeInterval(task.maxTaskDuration) <= Date()
                 {
+                    logger.info("Dequeueing stale task id \(task._id) of type \(task.category)")
                     _ = try await collection.findOneAndUpdate(where: "_id" == task._id, to: [
                         "$set": [
                             "status": TaskStatus.scheduled.raw.rawValue,
