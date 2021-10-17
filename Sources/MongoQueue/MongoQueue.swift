@@ -122,6 +122,7 @@ public struct TaskPriority {
 public struct _TaskConfiguration {
     internal enum _TaskConfiguration {
         case scheduled(ScheduledTaskConfiguration)
+        case recurring(RecurringTaskConfiguration)
     }
     
     internal var value: _TaskConfiguration
@@ -136,17 +137,19 @@ public struct _TaskConfiguration {
 public protocol ScheduledTask: _QueuedTask {
     /// The date that you want this to be executed (delay)
     /// If you want it to be immediate, use `Date()`
-    var scheduledDate: Date { get }
-    var executeBefore: Date? { get }
+    var taskExecutionDate: Date { get }
+    
+    /// Tasks won't be executed after this moment
+    var taskExecutionDeadline: Date? { get }
 }
 
 extension ScheduledTask {
-    public var executeBefore: Date? { nil }
+    public var taskExecutionDeadline: Date? { nil }
     
     public var configuration: _TaskConfiguration {
         let scheduled = ScheduledTaskConfiguration(
-            scheduledDate: scheduledDate,
-            executeBefore: executeBefore
+            scheduledDate: taskExecutionDate,
+            executeBefore: taskExecutionDeadline
         )
         return _TaskConfiguration(value: .scheduled(scheduled))
     }
@@ -160,7 +163,30 @@ public struct ScheduledTaskConfiguration: Codable {
 // TODO: Recurring Jobs
 
 public protocol RecurringTask: _QueuedTask {
+    /// The moment that you want this to be executed on (delay)
+    /// If you want it to be immediate, use `Date()`
+    var initialTaskExecutionDate: Date { get }
+    var recurringTaskInterval: TimeInterval { get }
+    var taskEecutionDeadline: TimeInterval? { get }
+}
+
+extension RecurringTask {
+    public var taskEecutionDeadline: TimeInterval? { nil }
     
+    public var configuration: _TaskConfiguration {
+        let recurring = RecurringTaskConfiguration(
+            scheduledDate: initialTaskExecutionDate,
+            deadline: taskEecutionDeadline,
+            interval: recurringTaskInterval
+        )
+        return _TaskConfiguration(value: .recurring(recurring))
+    }
+}
+
+struct RecurringTaskConfiguration: Codable {
+    let scheduledDate: Date
+    let deadline: TimeInterval?
+    let interval: TimeInterval
 }
 
 // - MARK: Global API
@@ -177,6 +203,7 @@ public enum MongoQueueError: Error {
     case unknownTaskCategory
     case reschedulingFailedTaskFailed
     case dequeueTaskFailed
+    case requeueRecurringTaskFailed
 }
 
 internal struct KnownType {
@@ -185,7 +212,7 @@ internal struct KnownType {
     
     init<T: _QueuedTask>(
         type: T.Type,
-        collection: MongoCollection.Async,
+        queue: MongoQueue,
         logger: Logger,
         context: T.ExecutionContext
     ) {
@@ -193,7 +220,7 @@ internal struct KnownType {
         self.performTask = { task in
             try await KnownType.performTask(
                 &task,
-                collection: collection,
+                queue: queue,
                 logger: logger,
                 ofType: type,
                 context: context
@@ -203,19 +230,35 @@ internal struct KnownType {
     
     private static func performTask<T: _QueuedTask>(
         _ task: inout TaskModel,
-        collection: MongoCollection.Async,
+        queue: MongoQueue,
         logger: Logger,
         ofType type: T.Type,
         context: T.ExecutionContext
     ) async throws {
         let metadata = try BSONDecoder().decode(type, from: task.metadata)
+        let taskConfig = try task.readConfiguration().value
+        let collection = queue.collection
         
-        switch try task.readConfiguration().value {
+        switch taskConfig {
         case .scheduled(let scheduleConfig):
             if let executeBefore = scheduleConfig.executeBefore, executeBefore < Date() {
                 logger.info("Task of category \"\(T.category)\" expired and will not be executed")
                 do {
                     // TODO: We assume this succeeds, but what if it does not?
+                    // TODO: WriteConcern majority
+                    _ = try await collection.deleteOne(where: "_id" == task._id)
+                } catch {
+                    logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
+                }
+                return
+            }
+        case .recurring(let recurringConfig):
+            // No filters exist (yet) that prevent a task from executing
+            if let deadline = recurringConfig.deadline, recurringConfig.scheduledDate.addingTimeInterval(deadline) < Date() {
+                logger.info("Task of category \"\(T.category)\" expired and will not be executed")
+                do {
+                    // TODO: We assume this succeeds, but what if it does not?
+                    // TODO: WriteConcern majority
                     _ = try await collection.deleteOne(where: "_id" == task._id)
                 } catch {
                     logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
@@ -248,11 +291,35 @@ internal struct KnownType {
             
             try await metadata.execute(withContext: context)
             executionUpdates.cancel()
-            do {
-                // TODO: We assume this succeeds, but what if it does not?
-                _ = try await collection.deleteOne(where: "_id" == task._id)
-            } catch {
-                logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
+            
+            switch taskConfig {
+            case .recurring(let taskConfig):
+                task.execution = nil
+                task.status = .scheduled
+                task.executeAfter = Date().addingTimeInterval(taskConfig.interval)
+                task.executeBefore = taskConfig.deadline.map { deadline in
+                    task.executeAfter.addingTimeInterval(deadline)
+                }
+                
+                do {
+                    // TODO: We assume this succeeds, but what if it does not?
+                    // TODO: WriteConcern majority
+                    guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
+                        throw MongoQueueError.requeueRecurringTaskFailed
+                    }
+                } catch {
+                    logger.critical("Failed to requeue recurring task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
+                }
+            case .scheduled:
+                do {
+                    // TODO: We assume this succeeds, but what if it does not?
+                    // TODO: WriteConcern majority
+                    guard try await collection.deleteOne(where: "_id" == task._id).deletes == 1 else {
+                        throw MongoQueueError.dequeueTaskFailed
+                    }
+                } catch {
+                    logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
+                }
             }
         } catch {
             logger.error("Execution failure for task \(task._id) in category \"\(T.category))\": \(error.localizedDescription)")
@@ -301,20 +368,7 @@ enum TaskExecutionResult {
 
 // TODO: ReadConcern majority in >= MongoDB 4.2
 public final class MongoQueue {
-//    private final actor ExecutingTasks {
-//        var runningTasks = 0
-//
-//        func increment() {
-//            runningTasks += 1
-//        }
-//
-//        func decrement() {
-//            runningTasks -= 1
-//            assert(runningTasks >= 0)
-//        }
-//    }
-    
-    private let collection: MongoCollection.Async
+    internal let collection: MongoCollection.Async
     private let logger: Logger
     private var knownTypes = [KnownType]()
     private var started = false
@@ -338,7 +392,7 @@ public final class MongoQueue {
         _ type: T.Type,
         context: T.ExecutionContext
     ) {
-        knownTypes.append(KnownType(type: type, collection: collection, logger: logger, context: context))
+        knownTypes.append(KnownType(type: type, queue: self, logger: logger, context: context))
     }
     
     @discardableResult
@@ -623,7 +677,7 @@ internal struct TaskModel: Codable {
 //    let allowsParallelisation: Bool
     
     private enum ConfigurationType: String, Codable {
-        case scheduled
+        case scheduled, recurring
     }
     
     private let configurationType: ConfigurationType
@@ -647,6 +701,13 @@ internal struct TaskModel: Codable {
             self.executeAfter = configuration.scheduledDate
             self.executeBefore = configuration.executeBefore
             self.configuration = try BSONEncoder().encode(configuration)
+        case .recurring(let configuration):
+            self.configurationType = .recurring
+            self.executeAfter = configuration.scheduledDate
+            self.executeBefore = configuration.deadline.map { deadline in
+                configuration.scheduledDate.addingTimeInterval(deadline)
+            }
+            self.configuration = try BSONEncoder().encode(configuration)
         }
     }
     
@@ -656,6 +717,12 @@ internal struct TaskModel: Codable {
             return try _TaskConfiguration(
                 value: .scheduled(
                     BSONDecoder().decode(ScheduledTaskConfiguration.self, from: configuration)
+                )
+            )
+        case .recurring:
+            return try _TaskConfiguration(
+                value: .recurring(
+                    BSONDecoder().decode(RecurringTaskConfiguration.self, from: configuration)
                 )
             )
         }

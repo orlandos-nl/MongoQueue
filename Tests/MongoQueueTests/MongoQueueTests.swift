@@ -23,7 +23,7 @@ final class MongoQueueTests: XCTestCase {
 }
 
 struct _Task: ScheduledTask {
-    var scheduledDate: Date {
+    var taskExecutionDate: Date {
         Date()
     }
     
