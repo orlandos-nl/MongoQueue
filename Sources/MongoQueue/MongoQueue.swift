@@ -21,6 +21,9 @@ public protocol _QueuedTask: Codable {
     /// The type of task being scheduled, defaults to your `Task.Type` name
     static var category: String { get }
     
+    ///
+    var group: String? { get }
+    
     /// The amount of urgency your task has. Tasks with higher priority take precedence over lower priorities.
     /// When priorities are equal, the first-created task is executed fist.
     var priority: TaskPriority { get }
@@ -49,6 +52,7 @@ public protocol _QueuedTask: Codable {
 extension _QueuedTask {
     public static var category: String { String(describing: Self.self) }
     public var priority: TaskPriority { .normal }
+    public var group: String? { nil }
     public var maxTaskDuration: TimeInterval { 10 * 60 }
 //    public var allowsParallelisation: Bool { false }
 }
@@ -166,18 +170,55 @@ public protocol RecurringTask: _QueuedTask {
     /// The moment that you want this to be executed on (delay)
     /// If you want it to be immediate, use `Date()`
     var initialTaskExecutionDate: Date { get }
+    
+    /// If you want only one task of this type to exist, use a static task key
+    /// If you want to have many tasks, but not duplicate the task, identify this task by the task key
+    /// If you don't want this task to be uniquely identified, and you want to spawn many of them, use `UUID().uuidString`
+    var uniqueTaskKey: String { get }
     var recurringTaskInterval: TimeInterval { get }
-    var taskEecutionDeadline: TimeInterval? { get }
+    var taskExecutionDeadline: TimeInterval? { get }
+    
+    // TODO: Dequeue mechanism
+        // .daily(hour: 7, minute: 30)
+        // .monthly()
+        //
+        // .interval(seconds: 300)
+    // TODO: Requeue mechanism
+}
+
+struct ScheduledInterval: Codable {
+    private(set) var nextOccurrance: Date
+    let schedule: Schedule
+    
+    enum Schedule: Codable {
+        case monthly//(..)
+        case daily//(..)
+        
+        func nextMoment(from date: Date = Date()) -> Date {
+            fatalError()
+        }
+    }
+    
+    init(schedule: Schedule) {
+        self.nextOccurrance = schedule.nextMoment()
+        self.schedule = schedule
+    }
+    
+    mutating func increment() {
+        nextOccurrance = schedule.nextMoment(from: nextOccurrance)
+    }
 }
 
 extension RecurringTask {
-    public var taskEecutionDeadline: TimeInterval? { nil }
+    public var taskExecutionDeadline: TimeInterval? { nil }
     
     public var configuration: _TaskConfiguration {
         let recurring = RecurringTaskConfiguration(
             scheduledDate: initialTaskExecutionDate,
-            deadline: taskEecutionDeadline,
-            interval: recurringTaskInterval
+            key: uniqueTaskKey,
+            deadline: taskExecutionDeadline,
+            interval: recurringTaskInterval,
+            scheduledMoments: []
         )
         return _TaskConfiguration(value: .recurring(recurring))
     }
@@ -185,8 +226,31 @@ extension RecurringTask {
 
 struct RecurringTaskConfiguration: Codable {
     let scheduledDate: Date
+    let key: String
     let deadline: TimeInterval?
     let interval: TimeInterval
+    var scheduledMoments: [ScheduledInterval]
+    
+    mutating func nextScheduledDate() -> Date? {
+        var earliest: (Date, index: Int)?
+        
+        for i in 0..<scheduledMoments.count {
+            if let _earliest = earliest {
+                if _earliest.0 > scheduledMoments[i].nextOccurrance {
+                    earliest = (scheduledMoments[i].nextOccurrance, i)
+                }
+            } else {
+                earliest = (scheduledMoments[i].nextOccurrance, i)
+            }
+        }
+        
+        if let earliest = earliest {
+            scheduledMoments[earliest.index].increment()
+            return earliest.0
+        } else {
+            return nil
+        }
+    }
 }
 
 // - MARK: Global API
@@ -235,9 +299,18 @@ internal struct KnownType {
         ofType type: T.Type,
         context: T.ExecutionContext
     ) async throws {
-        let metadata = try BSONDecoder().decode(type, from: task.metadata)
-        let taskConfig = try task.readConfiguration().value
         let collection = queue.collection
+        let metadata: T
+        
+        do {
+            metadata = try BSONDecoder().decode(type, from: task.metadata)
+        } catch {
+            logger.error("Task of category \"\(T.category)\" has changed metadata format")
+            try await collection.deleteOne(where: "_id" == task._id)
+            throw error
+        }
+        
+        let taskConfig = try task.readConfiguration().value
         
         switch taskConfig {
         case .scheduled(let scheduleConfig):
@@ -289,8 +362,8 @@ internal struct KnownType {
                 ).execute().map { _ in }
             }
             
+            defer { executionUpdates.cancel() }
             try await metadata.execute(withContext: context)
-            executionUpdates.cancel()
             
             switch taskConfig {
             case .recurring(let taskConfig):
@@ -640,6 +713,8 @@ internal struct TaskModel: Codable {
     
     /// Contains `Task.name`
     let category: String
+    let group: String?
+    let uniqueKey: String?
     
     let creationDate: Date
     let priority: TaskPriority._Raw
@@ -683,10 +758,11 @@ internal struct TaskModel: Codable {
     private let configuration: Document
     
     init<T: _QueuedTask>(representing task: T) throws {
-        assert(task.maxTaskDuration >= 30, "maxTaskDuration is set unreasonably low in catrgory \(T.category): \(task.maxTaskDuration)")
+        assert(task.maxTaskDuration >= 30, "maxTaskDuration is set unreasonably low in category \(T.category): \(task.maxTaskDuration)")
         
         self._id = ObjectId()
         self.category = T.category
+        self.group = task.group
         self.priority = task.priority.raw
         self.attempts = 0
         self.creationDate = Date()
@@ -697,11 +773,13 @@ internal struct TaskModel: Codable {
         switch task.configuration.value {
         case .scheduled(let configuration):
             self.configurationType = .scheduled
+            self.uniqueKey = nil
             self.executeAfter = configuration.scheduledDate
             self.executeBefore = configuration.executeBefore
             self.configuration = try BSONEncoder().encode(configuration)
         case .recurring(let configuration):
             self.configurationType = .recurring
+            self.uniqueKey = configuration.key
             self.executeAfter = configuration.scheduledDate
             self.executeBefore = configuration.deadline.map { deadline in
                 configuration.scheduledDate.addingTimeInterval(deadline)
