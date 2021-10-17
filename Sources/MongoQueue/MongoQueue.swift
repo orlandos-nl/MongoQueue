@@ -369,7 +369,7 @@ enum TaskExecutionResult {
 // TODO: ReadConcern majority in >= MongoDB 4.2
 public final class MongoQueue {
     internal let collection: MongoCollection.Async
-    private let logger: Logger
+    private let logger = Logger(label: "org.openkitten.mongo-queues")
     private var knownTypes = [KnownType]()
     private var started = false
     private var serverHasData = true
@@ -380,12 +380,10 @@ public final class MongoQueue {
     
     public init(collection: MongoCollection) {
         self.collection = collection.async
-        self.logger = Logger(label: "org.openkitten.mongo-queues")
     }
     
     public init(collection: MongoCollection.Async) {
         self.collection = collection
-        self.logger = Logger(label: "org.openkitten.mongo-queues")
     }
     
     public func registerTask<T: _QueuedTask>(
@@ -498,8 +496,8 @@ public final class MongoQueue {
         
         let eventLoop = collection.nio.eventLoop
         task = collection.nio.eventLoop.scheduleRepeatedAsyncTask(
-            initialDelay: stalledTaskPollingFrequency,
-            delay: .seconds(0),
+            initialDelay: .seconds(0),
+            delay: stalledTaskPollingFrequency,
             notifying: nil
         ) { [weak self, eventLoop] task in
             if let queue = self {
