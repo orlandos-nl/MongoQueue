@@ -415,6 +415,9 @@ internal struct KnownType {
                         throw MongoQueueError.dequeueTaskFailed
                     }
                 } else {
+                    task.status = .scheduled
+                    task.execution = nil
+                    
                     guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
                         throw MongoQueueError.reschedulingFailedTaskFailed
                     }
@@ -423,6 +426,8 @@ internal struct KnownType {
                 if let maxAttempts = maxAttempts, task.attempts >= maxAttempts {
                     try await collection.deleteOne(where: "_id" == task._id)
                 } else {
+                    task.status = .scheduled
+                    task.execution = nil
                     task.executeAfter = Date().addingTimeInterval(nextInterval)
                 }
             }
