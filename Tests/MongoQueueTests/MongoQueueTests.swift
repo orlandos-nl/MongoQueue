@@ -16,7 +16,7 @@ final class MongoQueueTests: XCTestCase {
         try await queue.queueTask(_Task(message: 3))
         
         // Sleep 5 sec
-        await Task.sleep(500_000_000)
+        try await Task.sleep(nanoseconds: 10_000_000_000)
         
         XCTAssertEqual(Self.ranTasks, 4)
     }

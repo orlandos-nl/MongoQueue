@@ -42,6 +42,8 @@ public protocol _QueuedTask: Codable {
     /// Executes the task using the available metadata stored in `self`
     func execute(withContext context: ExecutionContext) async throws
     
+    func onDequeueTask(withId taskId: ObjectId, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws
+    
     /// Called when the task failed to execute. Provides an opportunity to decide the fate of this task
     ///
     /// - Parameters:
@@ -150,6 +152,18 @@ public protocol ScheduledTask: _QueuedTask {
 extension ScheduledTask {
     public var taskExecutionDeadline: Date? { nil }
     
+    public func onDequeueTask(withId taskId: ObjectId, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws {
+        do {
+            // TODO: We assume this succeeds, but what if it does not?
+            // TODO: WriteConcern majority
+            guard try await queue.collection.deleteOne(where: "_id" == taskId).deletes == 1 else {
+                throw MongoQueueError.dequeueTaskFailed
+            }
+        } catch {
+            queue.logger.critical("Failed to delete task \(taskId) of category \"\(Self.category))\" after execution: \(error.localizedDescription)")
+        }
+    }
+    
     public var configuration: _TaskConfiguration {
         let scheduled = ScheduledTaskConfiguration(
             scheduledDate: taskExecutionDate,
@@ -175,15 +189,9 @@ public protocol RecurringTask: _QueuedTask {
     /// If you want to have many tasks, but not duplicate the task, identify this task by the task key
     /// If you don't want this task to be uniquely identified, and you want to spawn many of them, use `UUID().uuidString`
     var uniqueTaskKey: String { get }
-    var recurringTaskInterval: TimeInterval { get }
     var taskExecutionDeadline: TimeInterval? { get }
     
-    // TODO: Dequeue mechanism
-        // .daily(hour: 7, minute: 30)
-        // .monthly()
-        //
-        // .interval(seconds: 300)
-    // TODO: Requeue mechanism
+    func getNextRecurringTaskInterval(_ context: ExecutionContext) async throws -> TimeInterval?
 }
 
 struct ScheduledInterval: Codable {
@@ -212,13 +220,44 @@ struct ScheduledInterval: Codable {
 extension RecurringTask {
     public var taskExecutionDeadline: TimeInterval? { nil }
     
+    public func onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws {
+        do {
+            guard case .recurring(let taskConfig) = try task.readConfiguration().value else {
+                assertionFailure("Invalid internal MongoQueue state")
+                return
+            }
+            
+            if let nextInterval = try await getNextRecurringTaskInterval(context) {
+                var task = task
+                task.execution = nil
+                task.status = .scheduled
+                task.executeAfter = Date().addingTimeInterval(nextInterval)
+                task.executeBefore = taskConfig.deadline.map { deadline in
+                    task.executeAfter.addingTimeInterval(deadline)
+                }
+                
+                // TODO: We assume this succeeds, but what if it does not?
+                // TODO: WriteConcern majority
+                guard try await queue.collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
+                    throw MongoQueueError.requeueRecurringTaskFailed
+                }
+            } else {
+                // TODO: We assume this succeeds, but what if it does not?
+                // TODO: WriteConcern majority
+                guard try await queue.collection.deleteOne(where: "_id" == task._id).deletes == 1 else {
+                    throw MongoQueueError.dequeueTaskFailed
+                }
+            }
+        } catch {
+            queue.logger.critical("Failed to delete task \(task._id) of category \"\(Self.category))\" after execution: \(error.localizedDescription)")
+        }
+    }
+    
     public var configuration: _TaskConfiguration {
         let recurring = RecurringTaskConfiguration(
             scheduledDate: initialTaskExecutionDate,
             key: uniqueTaskKey,
-            deadline: taskExecutionDeadline,
-            interval: recurringTaskInterval,
-            scheduledMoments: []
+            deadline: taskExecutionDeadline
         )
         return _TaskConfiguration(value: .recurring(recurring))
     }
@@ -228,29 +267,6 @@ struct RecurringTaskConfiguration: Codable {
     let scheduledDate: Date
     let key: String
     let deadline: TimeInterval?
-    let interval: TimeInterval
-    var scheduledMoments: [ScheduledInterval]
-    
-    mutating func nextScheduledDate() -> Date? {
-        var earliest: (Date, index: Int)?
-        
-        for i in 0..<scheduledMoments.count {
-            if let _earliest = earliest {
-                if _earliest.0 > scheduledMoments[i].nextOccurrance {
-                    earliest = (scheduledMoments[i].nextOccurrance, i)
-                }
-            } else {
-                earliest = (scheduledMoments[i].nextOccurrance, i)
-            }
-        }
-        
-        if let earliest = earliest {
-            scheduledMoments[earliest.index].increment()
-            return earliest.0
-        } else {
-            return nil
-        }
-    }
 }
 
 // - MARK: Global API
@@ -365,35 +381,7 @@ internal struct KnownType {
             defer { executionUpdates.cancel() }
             try await metadata.execute(withContext: context)
             
-            switch taskConfig {
-            case .recurring(let taskConfig):
-                task.execution = nil
-                task.status = .scheduled
-                task.executeAfter = Date().addingTimeInterval(taskConfig.interval)
-                task.executeBefore = taskConfig.deadline.map { deadline in
-                    task.executeAfter.addingTimeInterval(deadline)
-                }
-                
-                do {
-                    // TODO: We assume this succeeds, but what if it does not?
-                    // TODO: WriteConcern majority
-                    guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
-                        throw MongoQueueError.requeueRecurringTaskFailed
-                    }
-                } catch {
-                    logger.critical("Failed to requeue recurring task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
-                }
-            case .scheduled:
-                do {
-                    // TODO: We assume this succeeds, but what if it does not?
-                    // TODO: WriteConcern majority
-                    guard try await collection.deleteOne(where: "_id" == task._id).deletes == 1 else {
-                        throw MongoQueueError.dequeueTaskFailed
-                    }
-                } catch {
-                    logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
-                }
-            }
+            try await metadata.onDequeueTask(withId: task._id, withContext: context, inQueue: queue)
         } catch {
             logger.error("Execution failure for task \(task._id) in category \"\(T.category))\": \(error.localizedDescription)")
             let failureContext = QueuedTaskFailure(
@@ -447,7 +435,7 @@ enum TaskExecutionResult {
 // TODO: ReadConcern majority in >= MongoDB 4.2
 public final class MongoQueue {
     internal let collection: MongoCollection.Async
-    private let logger = Logger(label: "org.openkitten.mongo-queues")
+    fileprivate let logger = Logger(label: "org.openkitten.mongo-queues")
     private var knownTypes = [KnownType]()
     private var started = false
     private var serverHasData = true
@@ -590,6 +578,7 @@ public final class MongoQueue {
         }
         
         if let wireVersion = collection.nio.database.pool.wireVersion, wireVersion.supportsCollectionChangeStream {
+            try await cursorInitiatedTick()
             try await self.startChangeStreamTicks()
         } else {
             try await self.sleepBasedTick()
@@ -654,7 +643,7 @@ public final class MongoQueue {
         }
         
         if !serverHasData {
-            await Task.sleep(UInt64(newTaskPollingFrequency.nanoseconds))
+            try await Task.sleep(nanoseconds: UInt64(newTaskPollingFrequency.nanoseconds))
         }
         
         do {
@@ -713,7 +702,7 @@ public final class MongoQueue {
     }
 }
 
-internal struct TaskModel: Codable {
+public struct TaskModel: Codable {
     let _id: ObjectId
     
     /// Contains `Task.name`
