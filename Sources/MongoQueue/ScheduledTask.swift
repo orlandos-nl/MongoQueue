@@ -18,8 +18,10 @@ extension ScheduledTask {
     public func onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws {
         do {
             // TODO: We assume this succeeds, but what if it does not?
-            // TODO: WriteConcern majority
-            guard try await queue.collection.deleteOne(where: "_id" == task._id).deletes == 1 else {
+            var concern = WriteConcern()
+            concern.acknowledgement = .majority
+            
+            guard try await queue.collection.deleteOne(where: "_id" == task._id, writeConcern: concern).deletes == 1 else {
                 throw MongoQueueError.dequeueTaskFailed
             }
         } catch {

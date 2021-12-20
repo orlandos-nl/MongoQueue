@@ -51,8 +51,9 @@ internal struct KnownType {
                 logger.info("Task of category \"\(T.category)\" expired and will not be executed")
                 do {
                     // TODO: We assume this succeeds, but what if it does not?
-                    // TODO: WriteConcern majority
-                    _ = try await collection.deleteOne(where: "_id" == task._id)
+                    var concern = WriteConcern()
+                    concern.acknowledgement = .majority
+                    try await collection.deleteOne(where: "_id" == task._id, writeConcern: concern)
                 } catch {
                     logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
                 }
@@ -64,8 +65,9 @@ internal struct KnownType {
                 logger.info("Task of category \"\(T.category)\" expired and will not be executed")
                 do {
                     // TODO: We assume this succeeds, but what if it does not?
-                    // TODO: WriteConcern majority
-                    _ = try await collection.deleteOne(where: "_id" == task._id)
+                    var concern = WriteConcern()
+                    concern.acknowledgement = .majority
+                    try await collection.deleteOne(where: "_id" == task._id, writeConcern: concern)
                 } catch {
                     logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
                 }

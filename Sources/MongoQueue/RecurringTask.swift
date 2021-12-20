@@ -49,7 +49,8 @@ extension RecurringTask {
                 assertionFailure("Invalid internal MongoQueue state")
                 return
             }
-            
+            var concern = WriteConcern()
+            concern.acknowledgement = .majority
             if let nextDate = try await getNextRecurringTaskDate(context) {
                 var task = task
                 task.execution = nil
@@ -66,8 +67,7 @@ extension RecurringTask {
                 }
             } else {
                 // TODO: We assume this succeeds, but what if it does not?
-                // TODO: WriteConcern majority
-                guard try await queue.collection.deleteOne(where: "_id" == task._id).deletes == 1 else {
+                guard try await queue.collection.deleteOne(where: "_id" == task._id, writeConcern: concern).deletes == 1 else {
                     throw MongoQueueError.dequeueTaskFailed
                 }
             }
