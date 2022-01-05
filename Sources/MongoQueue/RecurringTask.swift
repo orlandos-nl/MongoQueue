@@ -52,6 +52,7 @@ extension RecurringTask {
             var concern = WriteConcern()
             concern.acknowledgement = .majority
             if let nextDate = try await getNextRecurringTaskDate(context) {
+                assert(nextDate >= Date())
                 var task = task
                 task.execution = nil
                 task.status = .scheduled
