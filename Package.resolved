@@ -14,9 +14,9 @@
         "package": "MongoKitten",
         "repositoryURL": "https://github.com/OpenKitten/MongoKitten.git",
         "state": {
-          "branch": "write-concern",
-          "revision": "68cfe3a4796993384f2615b86601f482d8eaeb19",
-          "version": null
+          "branch": null,
+          "revision": "d22edbbf262d6925dbaed74cc83fa8953e867590",
+          "version": "6.7.2"
         }
       },
       {
