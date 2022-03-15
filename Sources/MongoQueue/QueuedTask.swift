@@ -30,7 +30,7 @@ public protocol _QueuedTask: Codable {
 //    var allowsParallelisation: Bool { get }
     
     /// Executes the task using the available metadata stored in `self`
-    func execute(withContext context: ExecutionContext) async throws
+    mutating func execute(withContext context: ExecutionContext) async throws
     
     func onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws
     

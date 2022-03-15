@@ -54,6 +54,7 @@ extension RecurringTask {
             if let nextDate = try await getNextRecurringTaskDate(context) {
                 assert(nextDate >= Date())
                 var task = task
+                task.metadata = try BSONEncoder().encode(self)
                 task.execution = nil
                 task.status = .scheduled
                 task.executeAfter = nextDate

@@ -24,8 +24,8 @@
         "repositoryURL": "https://github.com/OpenKitten/NioDNS.git",
         "state": {
           "branch": null,
-          "revision": "7517b774d48833f04869fcde668d2f338fadc464",
-          "version": "2.0.6"
+          "revision": "71cfedd3310d59b7d19e290176dd2a1a605a4252",
+          "version": "2.0.7"
         }
       },
       {
@@ -51,8 +51,8 @@
         "repositoryURL": "https://github.com/apple/swift-nio.git",
         "state": {
           "branch": null,
-          "revision": "213eb6887e526e0dfac526a2eae559a1893ebbac",
-          "version": "2.36.0"
+          "revision": "154f1d32366449dcccf6375a173adf4ed2a74429",
+          "version": "2.38.0"
         }
       },
       {
@@ -60,8 +60,8 @@
         "repositoryURL": "https://github.com/apple/swift-nio-ssl.git",
         "state": {
           "branch": null,
-          "revision": "2b329e37e9dd34fb382655181a680261d58cbbf1",
-          "version": "2.17.1"
+          "revision": "52a486ff6de9bc3e26bf634c5413c41c5fa89ca5",
+          "version": "2.17.2"
         }
       }
     ]

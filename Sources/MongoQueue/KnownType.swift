@@ -33,7 +33,7 @@ internal struct KnownType {
         context: T.ExecutionContext
     ) async throws {
         let collection = queue.collection
-        let metadata: T
+        var metadata: T
         
         do {
             metadata = try BSONDecoder().decode(type, from: task.metadata)
