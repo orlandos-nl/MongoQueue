@@ -9,6 +9,7 @@ public struct TaskStatus {
         case scheduled
         case suspended
         case executing
+        case dequeued
     }
     
     internal let raw: _Raw
@@ -21,6 +22,9 @@ public struct TaskStatus {
     
     /// The task is currently executing
     public static let executing = TaskStatus(raw: .executing)
+    
+    /// The task is dequeued / soft deleted
+    public static let dequeued = TaskStatus(raw: .dequeued)
 }
 
 // TODO: ReadConcern majority in >= MongoDB 4.2
@@ -139,7 +143,7 @@ public final class MongoQueue {
             throw MongoQueueError.alreadyStarted
         }
         
-        Task.detached {
+        Task {
             try await self.run()
         }
     }
@@ -176,6 +180,10 @@ public final class MongoQueue {
         }
     }
     
+    public func shutdown() {
+        self.started = false
+    }
+    
     private func startChangeStreamTicks() async throws {
         // Using change stream cursor based polling
         var options = ChangeStreamOptions()
@@ -185,9 +193,9 @@ public final class MongoQueue {
         cursor.forEach { change in
             if change.operationType == .insert || change.operationType == .update || change.operationType == .replace {
                 // Dataset changed, retry
-                if self.serverHasData {
+                if !self.serverHasData {
                     self.serverHasData = true
-                    Task.detached {
+                    Task {
                         try await self.cursorInitiatedTick()
                     }
                 }
@@ -196,7 +204,7 @@ public final class MongoQueue {
             return self.started
         }
         
-        Task.detached {
+        Task {
             try await self.cursorInitiatedTick()
         }
         
@@ -215,7 +223,7 @@ public final class MongoQueue {
         do {
             switch try await self.runNextTask() {
             case .taskSuccessful, .taskFailure:
-                Task.detached {
+                Task {
                     try await self.cursorInitiatedTick()
                 }
             case .noneExecuted:
@@ -249,7 +257,7 @@ public final class MongoQueue {
             serverHasData = false
         }
         
-        Task.detached {
+        Task {
             try await self.sleepBasedTick()
         }
     }

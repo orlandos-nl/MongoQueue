@@ -111,16 +111,28 @@ internal struct KnownType {
             )
             let onFailure = try await metadata.onExecutionFailure(failureContext: failureContext)
             
-            switch onFailure.raw {
-            case .dequeue:
-                guard try await collection.deleteOne(where: "_id" == task._id).deletes == 1 else {
-                    throw MongoQueueError.dequeueTaskFailed
-                }
-            case .retry(maxAttempts: let maxAttempts):
-                if let maxAttempts = maxAttempts, task.attempts >= maxAttempts {
+            func applyRemoval(_ removal: TaskRemovalAction) async throws {
+                switch removal.raw {
+                case .softDelete:
+                    task.status = .dequeued
+                    task.execution = nil
+                    
+                    guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
+                        throw MongoQueueError.reschedulingFailedTaskFailed
+                    }
+                case .dequeue:
                     guard try await collection.deleteOne(where: "_id" == task._id).deletes == 1 else {
                         throw MongoQueueError.dequeueTaskFailed
                     }
+                }
+            }
+            
+            switch onFailure.raw {
+            case .removal(let removal):
+                try await applyRemoval(removal)
+            case .retry(maxAttempts: let maxAttempts, let removal):
+                if let maxAttempts = maxAttempts, task.attempts >= maxAttempts {
+                    try await applyRemoval(removal)
                 } else {
                     task.status = .scheduled
                     task.execution = nil
@@ -129,9 +141,9 @@ internal struct KnownType {
                         throw MongoQueueError.reschedulingFailedTaskFailed
                     }
                 }
-            case .retryAfter(let nextInterval, maxAttempts: let maxAttempts):
+            case .retryAfter(let nextInterval, maxAttempts: let maxAttempts, let removal):
                 if let maxAttempts = maxAttempts, task.attempts >= maxAttempts {
-                    try await collection.deleteOne(where: "_id" == task._id)
+                    try await applyRemoval(removal)
                 } else {
                     task.status = .scheduled
                     task.execution = nil
