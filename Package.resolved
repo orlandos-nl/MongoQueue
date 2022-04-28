@@ -12,11 +12,11 @@
       },
       {
         "package": "MongoKitten",
-        "repositoryURL": "https://github.com/OpenKitten/MongoKitten.git",
+        "repositoryURL": "https://github.com/orlandos-nl/MongoKitten.git",
         "state": {
           "branch": null,
-          "revision": "d22edbbf262d6925dbaed74cc83fa8953e867590",
-          "version": "6.7.2"
+          "revision": "cb99975e6ae6f2de2821080f3789aaf831752187",
+          "version": "6.7.4"
         }
       },
       {
