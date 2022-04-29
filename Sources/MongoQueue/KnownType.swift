@@ -118,7 +118,7 @@ internal struct KnownType {
                     task.execution = nil
                     
                     guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
-                        throw MongoQueueError.reschedulingFailedTaskFailed
+                        throw MongoQueueError.dequeueTaskFailed
                     }
                 case .dequeue:
                     guard try await collection.deleteOne(where: "_id" == task._id).deletes == 1 else {

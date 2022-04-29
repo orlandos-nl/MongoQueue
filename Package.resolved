@@ -15,8 +15,8 @@
         "repositoryURL": "https://github.com/orlandos-nl/MongoKitten.git",
         "state": {
           "branch": null,
-          "revision": "cb99975e6ae6f2de2821080f3789aaf831752187",
-          "version": "6.7.4"
+          "revision": "c3ca3bec61fec81c06d2275df8cde2dee72d1cab",
+          "version": "6.7.5"
         }
       },
       {
@@ -42,8 +42,8 @@
         "repositoryURL": "https://github.com/apple/swift-metrics.git",
         "state": {
           "branch": null,
-          "revision": "3edd2f57afc4e68e23c3e4956bc8b65ca6b5b2ff",
-          "version": "2.2.0"
+          "revision": "eadb828f878fed144387e3845866225bb7082c56",
+          "version": "2.3.0"
         }
       },
       {
@@ -51,8 +51,8 @@
         "repositoryURL": "https://github.com/apple/swift-nio.git",
         "state": {
           "branch": null,
-          "revision": "154f1d32366449dcccf6375a173adf4ed2a74429",
-          "version": "2.38.0"
+          "revision": "124119f0bb12384cef35aa041d7c3a686108722d",
+          "version": "2.40.0"
         }
       },
       {

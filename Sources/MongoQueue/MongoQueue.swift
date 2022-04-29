@@ -74,11 +74,7 @@ public final class MongoQueue {
         writeConcern.acknowledgement = .majority
         
         var filter: Document = "status" == TaskStatus.scheduled.raw.rawValue
-        let nullExecuteAfter: Document = [
-            "executeAfter": Null()
-        ]
-        let noExecuteAfter: Document = ["executeAfter": ["$exists": false]]
-        let executeAfterFilter: OrQuery = nullExecuteAfter || noExecuteAfter || "executeAfter" <= Date()
+        let executeAfterFilter: Document = "executeAfter" <= Date()
         filter = (filter && executeAfterFilter).makeDocument()
         
         let reply = try await collection.nio.findOneAndUpdate(
