@@ -77,9 +77,7 @@ public final class MongoQueue {
         let nullExecuteAfter: Document = [
             "executeAfter": Null()
         ]
-        let noExecuteAfter: Document = [
-            ["executeAfter": ["$exists": false]]
-        ]
+        let noExecuteAfter: Document = ["executeAfter": ["$exists": false]]
         let executeAfterFilter: OrQuery = nullExecuteAfter || noExecuteAfter || "executeAfter" <= Date()
         filter = (filter && executeAfterFilter).makeDocument()
         
