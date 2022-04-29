@@ -87,9 +87,3 @@ extension RecurringTask {
         return _TaskConfiguration(value: .recurring(recurring))
     }
 }
-
-struct RecurringTaskConfiguration: Codable {
-    let scheduledDate: Date
-    let key: String
-    let deadline: TimeInterval?
-}
