@@ -3,30 +3,6 @@ import MongoCore
 import Foundation
 import Meow
 
-/// The current status of your task
-public struct TaskStatus {
-    internal enum _Raw: String, Codable {
-        case scheduled
-        case suspended
-        case executing
-        case dequeued
-    }
-    
-    internal let raw: _Raw
-    
-    /// The task is scheduled, and is ready for execution
-    public static let scheduled = TaskStatus(raw: .scheduled)
-    
-    /// The task has been suspended until further action
-    public static let suspended = TaskStatus(raw: .suspended)
-    
-    /// The task is currently executing
-    public static let executing = TaskStatus(raw: .executing)
-    
-    /// The task is dequeued / soft deleted
-    public static let dequeued = TaskStatus(raw: .dequeued)
-}
-
 // TODO: ReadConcern majority in >= MongoDB 4.2
 public final class MongoQueue {
     internal let collection: MongoCollection.Async
@@ -98,7 +74,13 @@ public final class MongoQueue {
         writeConcern.acknowledgement = .majority
         
         var filter: Document = "status" == TaskStatus.scheduled.raw.rawValue
-        let executeAfterFilter: OrQuery = "executeAfter" == nil || "executeAfter" <= Date()
+        let nullExecuteAfter: Document = [
+            "executeAfter": Null()
+        ]
+        let noExecuteAfter: Document = [
+            ["executeAfter": ["$exists": false]]
+        ]
+        let executeAfterFilter: OrQuery = nullExecuteAfter || noExecuteAfter || "executeAfter" <= Date()
         filter = (filter && executeAfterFilter).makeDocument()
         
         let reply = try await collection.nio.findOneAndUpdate(

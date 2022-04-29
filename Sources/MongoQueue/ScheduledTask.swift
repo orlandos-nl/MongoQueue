@@ -37,8 +37,3 @@ extension ScheduledTask {
         return _TaskConfiguration(value: .scheduled(scheduled))
     }
 }
-
-public struct ScheduledTaskConfiguration: Codable {
-    let scheduledDate: Date
-    let executeBefore: Date?
-}
