@@ -31,12 +31,16 @@ extension ScheduledTask {
                     throw MongoQueueError.dequeueTaskFailed
                 }
             case .softDelete:
-                var task = task
-                
-                task.status = .dequeued
-                task.execution = nil
-                
-                guard try await queue.collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
+                let update = try await queue.collection.updateOne(
+                    where: "_id" == task._id,
+                    to: [
+                        "$set": [
+                            "status": TaskStatus.dequeued.raw.rawValue,
+                            "execution.lastUpdate": Date()
+                        ] as Document
+                    ]
+                )
+                guard update.updatedCount == 1 else {
                     throw MongoQueueError.dequeueTaskFailed
                 }
             }

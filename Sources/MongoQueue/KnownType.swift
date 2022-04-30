@@ -114,10 +114,16 @@ internal struct KnownType {
             func applyRemoval(_ removal: TaskRemovalAction) async throws {
                 switch removal.raw {
                 case .softDelete:
-                    task.status = .dequeued
-                    task.execution = nil
-                    
-                    guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
+                    let updateReply = try await queue.collection.updateOne(
+                        where: "_id" == task._id,
+                        to: [
+                            "$set": [
+                                "status": TaskStatus.dequeued.raw.rawValue,
+                                "execution.lastUpdate": Date()
+                            ] as Document
+                        ]
+                    )
+                    guard updateReply.updatedCount == 1 else {
                         throw MongoQueueError.dequeueTaskFailed
                     }
                 case .dequeue:

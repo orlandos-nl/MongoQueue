@@ -54,21 +54,6 @@ public struct TaskStatus {
 }
 
 public struct TaskModel: Codable {
-    let _id: ObjectId
-    
-    /// Contains `Task.name`
-    let category: String
-    let group: String?
-    let uniqueKey: String?
-    
-    let creationDate: Date
-    let priority: TaskPriority._Raw
-    var executeAfter: Date
-    var executeBefore: Date?
-    var attempts: Int
-    var status: TaskStatus._Raw
-    var metadata: Document
-    
     struct ExecutingContext: Codable {
         /// Used to represent when the task was first started. Normally it's equal to `executionStartDate`
         /// But when a task takes an unexpectedly long amount of time, the two values will be different
@@ -90,6 +75,21 @@ public struct TaskModel: Codable {
             lastUpdate = Date()
         }
     }
+    
+    let _id: ObjectId
+    
+    /// Contains `Task.name`
+    let category: String
+    let group: String?
+    let uniqueKey: String?
+    
+    let creationDate: Date
+    let priority: TaskPriority._Raw
+    var executeAfter: Date
+    var executeBefore: Date?
+    var attempts: Int
+    var status: TaskStatus._Raw
+    var metadata: Document
     
     var execution: ExecutingContext?
     let maxTaskDuration: TimeInterval
