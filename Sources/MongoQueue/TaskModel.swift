@@ -55,6 +55,10 @@ public struct TaskStatus {
 
 public struct TaskModel: Codable {
     struct ExecutingContext: Codable {
+        enum EndState: String, Codable {
+            case success, failure
+        }
+        
         /// Used to represent when the task was first started. Normally it's equal to `executionStartDate`
         /// But when a task takes an unexpectedly long amount of time, the two values will be different
         let startDate: Date
@@ -64,6 +68,8 @@ public struct TaskModel: Codable {
         /// If the current date exceeds `executionStartDate + maxTaskDuration`, the task likely crashed
         /// The executioner of the task **MUST** refresh this date at least every `maxTaskDuration` interval to ensure other executioners don't pick up on the task
         var lastUpdate: Date
+        
+        var endState: EndState?
         
         init() {
             let now = Date()

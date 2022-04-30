@@ -116,6 +116,7 @@ internal struct KnownType {
                 case .softDelete:
                     task.status = .dequeued
                     task.execution?.lastUpdate = Date()
+                    task.execution?.endState = .failure
                     
                     let update = try await queue.collection.upsertEncoded(task, where: "_id" == task._id)
                     
