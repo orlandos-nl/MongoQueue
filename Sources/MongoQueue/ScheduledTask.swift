@@ -34,6 +34,7 @@ extension ScheduledTask {
                 var task = task
                 task.status = .dequeued
                 task.execution?.lastUpdate = Date()
+                task.execution?.endState = .success
                 
                 let update = try await queue.collection.upsertEncoded(task, where: "_id" == task._id)
                 
