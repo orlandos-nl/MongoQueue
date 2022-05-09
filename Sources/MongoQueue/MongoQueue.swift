@@ -79,14 +79,14 @@ public final class MongoQueue {
         
         let reply = try await collection.nio.findOneAndUpdate(
             where: filter,
-                 to: [
-                    "$set": [
-                        "status": TaskStatus.executing.raw.rawValue,
-                        "execution": context
-                    ] as Document
-                 ],
-                 returnValue: .modified
-            )
+            to: [
+                "$set": [
+                    "status": TaskStatus.executing.raw.rawValue,
+                    "execution": context
+                ] as Document
+            ],
+            returnValue: .modified
+        )
             .sort([
                 "priority": .descending,
                 "executeBefore": .ascending,
@@ -114,12 +114,13 @@ public final class MongoQueue {
         }
     }
     
-    public func runInBackground() throws {
+    @discardableResult
+    public func runInBackground() throws -> Task<Void, Error> {
         if started {
             throw MongoQueueError.alreadyStarted
         }
         
-        Task {
+        return Task {
             try await self.run()
         }
     }
@@ -132,6 +133,8 @@ public final class MongoQueue {
         started = true
         
         let eventLoop = collection.nio.eventLoop
+        
+        // If another instance crashed, causing a stale task, this ensures the task gets requeued
         task = collection.nio.eventLoop.scheduleRepeatedAsyncTask(
             initialDelay: .seconds(0),
             delay: stalledTaskPollingFrequency,
@@ -180,14 +183,22 @@ public final class MongoQueue {
             return self.started
         }
         
-        Task {
-            try await self.cursorInitiatedTick()
+        // Kick off the first tick, because we might immediately have work
+        try await self.cursorInitiatedTick()
+        
+        // The change stream only observes _changes_ to datasets
+        // That allows us to respond to new tasks rapidly
+        // We still want background ticks so that a 
+        let backgroundTicks = Task {
+            try await self.sleepBasedTick()
         }
         
         do {
             // Ideally, this is where we stay
             try await cursor.awaitClose()
         } catch {}
+        
+        backgroundTicks.cancel()
         
         if self.started {
             // Restart Change Stream
@@ -213,28 +224,22 @@ public final class MongoQueue {
     }
     
     private func sleepBasedTick() async throws {
-        if !started {
-            return
-        }
-        
-        if !serverHasData {
-            try await Task.sleep(nanoseconds: UInt64(newTaskPollingFrequency.nanoseconds))
-        }
-        
-        do {
-            if case .noneExecuted = try await self.runNextTask() {
-                serverHasData = false
-            } else {
-                serverHasData = true
+        while started {
+            if !serverHasData {
+                try await Task.sleep(nanoseconds: UInt64(newTaskPollingFrequency.nanoseconds))
             }
-        } catch {
-            // Task execution failed due to a MongoDB error
-            // Otherwise the return type would specify the task status
-            serverHasData = false
-        }
-        
-        Task {
-            try await self.sleepBasedTick()
+            
+            do {
+                if case .noneExecuted = try await self.runNextTask() {
+                    serverHasData = false
+                } else {
+                    serverHasData = true
+                }
+            } catch {
+                // Task execution failed due to a MongoDB error
+                // Otherwise the return type would specify the task status
+                serverHasData = false
+            }
         }
     }
     
