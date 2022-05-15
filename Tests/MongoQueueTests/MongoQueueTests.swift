@@ -59,6 +59,11 @@ struct RTRecurringTask: RecurringTask {
     var initialTaskExecutionDate: Date { Date() }
     
     var uniqueTaskKey: String = "RecurringTask"
+
+    func updateInvalidNextRecurringTaskDate(_ context: Void) async throws -> Date? {
+
+        return nil
+    }
     
     func getNextRecurringTaskDate(_ context: ExecutionContext) async throws -> Date? {
         MongoQueueTests.ranTasks >= 5 ? nil : Date()

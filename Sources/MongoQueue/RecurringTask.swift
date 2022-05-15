@@ -13,7 +13,9 @@ public protocol RecurringTask: _QueuedTask {
     /// If you don't want this task to be uniquely identified, and you want to spawn many of them, use `UUID().uuidString`
     var uniqueTaskKey: String { get }
     var taskExecutionDeadline: TimeInterval? { get }
-    
+
+    func updateInvalidNextRecurringTaskDate(_ context: ExecutionContext) async throws -> Date?
+
     func getNextRecurringTaskDate(_ context: ExecutionContext) async throws -> Date?
 }
 
@@ -51,8 +53,21 @@ extension RecurringTask {
             }
             var concern = WriteConcern()
             concern.acknowledgement = .majority
-            if let nextDate = try await getNextRecurringTaskDate(context) {
-                assert(nextDate >= Date())
+            if var nextDate = try await getNextRecurringTaskDate(context) {
+
+                if nextDate >= Date() {
+
+                    guard let updatedDate = try await updateInvalidNextRecurringTaskDate(context)
+                    else {
+
+                        throw MongoQueueError.reschedulingFailedTaskFailed
+                    }
+
+                    nextDate = updatedDate
+
+                    assert(nextDate >= Date())
+                }
+
                 var task = task
                 task.metadata = try BSONEncoder().encode(self)
                 task.execution = nil
