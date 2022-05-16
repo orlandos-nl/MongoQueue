@@ -32,7 +32,7 @@ public protocol _QueuedTask: Codable {
     /// Executes the task using the available metadata stored in `self`
     mutating func execute(withContext context: ExecutionContext) async throws
     
-    func onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws
+    func _onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws
     
     /// Called when the task failed to execute. Provides an opportunity to decide the fate of this task
     ///

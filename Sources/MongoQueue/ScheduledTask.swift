@@ -19,7 +19,7 @@ extension ScheduledTask {
     public var taskExecutionDeadline: Date? { nil }
     public var taskRemovalAction: TaskRemovalAction { .dequeue() }
     
-    public func onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws {
+    public func _onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws {
         do {
             // TODO: We assume this succeeds, but what if it does not?
             var concern = WriteConcern()

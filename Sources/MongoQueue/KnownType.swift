@@ -100,7 +100,7 @@ internal struct KnownType {
             defer { executionUpdates.cancel() }
             try await metadata.execute(withContext: context)
             
-            try await metadata.onDequeueTask(task, withContext: context, inQueue: queue)
+            try await metadata._onDequeueTask(task, withContext: context, inQueue: queue)
         } catch {
             logger.error("Execution failure for task \(task._id) in category \"\(T.category))\": \(error.localizedDescription)")
             let failureContext = QueuedTaskFailure(

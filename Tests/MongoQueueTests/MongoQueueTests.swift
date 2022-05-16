@@ -24,14 +24,14 @@ final class MongoQueueTests: XCTestCase {
     
     func test_recurringTask() async throws {
         Self.ranTasks = 0
-        let db = try MongoDatabase.synchronousConnect("mongodb://localhost/queues")
+        let db = try MongoDatabase.synchronousConnect("mongodb+srv://joannis:rpdcgvbRoeXO0dz2@ok0-xkvc1.mongodb.net/test?retryWrites=true&w=majority")
         let queue = MongoQueue(collection: db["tasks"])
         queue.registerTask(RTRecurringTask.self, context: ())
         try await queue.queueTask(RTRecurringTask())
         try queue.runInBackground()
         
-        // Sleep 15 sec
-        try await Task.sleep(nanoseconds: 5_000_000_000)
+        // Sleep 30 sec, so each 5-second window is ran, +5 seconds to test if it runs only 5 times
+        try await Task.sleep(nanoseconds: 35_000_000_000)
         
         XCTAssertEqual(Self.ranTasks, 5)
     }
@@ -61,7 +61,7 @@ struct RTRecurringTask: RecurringTask {
     var uniqueTaskKey: String = "RecurringTask"
     
     func getNextRecurringTaskDate(_ context: ExecutionContext) async throws -> Date? {
-        MongoQueueTests.ranTasks >= 5 ? nil : Date()
+        MongoQueueTests.ranTasks >= 5 ? nil : Date().addingTimeInterval(5)
     }
         
     func execute(withContext context: Void) async throws {

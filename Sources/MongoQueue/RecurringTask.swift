@@ -43,7 +43,7 @@ struct ScheduledInterval: Codable {
 extension RecurringTask {
     public var taskExecutionDeadline: TimeInterval? { nil }
     
-    public func onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws {
+    public func _onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws {
         do {
             guard case .recurring(let taskConfig) = try task.readConfiguration().value else {
                 assertionFailure("Invalid internal MongoQueue state")
@@ -52,7 +52,6 @@ extension RecurringTask {
             var concern = WriteConcern()
             concern.acknowledgement = .majority
             if let nextDate = try await getNextRecurringTaskDate(context) {
-                assert(nextDate >= Date())
                 var task = task
                 task.metadata = try BSONEncoder().encode(self)
                 task.execution = nil
