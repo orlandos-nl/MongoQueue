@@ -11,7 +11,7 @@ A [MongoKitten](https://github.com/orlandos-nl/MongoKitten) based JobQueue for M
 Connect to MongoDB with MongoKitten regularly:
 
 ```swift
-let db = try MongoDatabase.synchronousConnect("mongodb://localhost/queues")
+let db = try await MongoDatabase.connect(to: "mongodb://localhost/my_database")
 ```
 
 Select a collection for your job queue:
