@@ -19,7 +19,7 @@ extension ScheduledTask {
     public var taskExecutionDeadline: Date? { nil }
     public var taskRemovalAction: TaskRemovalAction { .dequeue() }
     
-    public func _onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws {
+    public func _onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws -> _DequeueResult{
         do {
             // TODO: We assume this succeeds, but what if it does not?
             var concern = WriteConcern()
@@ -45,6 +45,8 @@ extension ScheduledTask {
         } catch {
             queue.logger.critical("Failed to delete task \(task._id) of category \"\(Self.category))\" after execution: \(error.localizedDescription)")
         }
+        
+        return _DequeueResult()
     }
     
     public var configuration: _TaskConfiguration {

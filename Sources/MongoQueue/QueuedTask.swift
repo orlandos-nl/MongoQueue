@@ -32,7 +32,8 @@ public protocol _QueuedTask: Codable {
     /// Executes the task using the available metadata stored in `self`
     mutating func execute(withContext context: ExecutionContext) async throws
     
-    func _onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws
+    /// Do not implement this method yourself, if you need this hook let us know
+    func _onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws -> _DequeueResult
     
     /// Called when the task failed to execute. Provides an opportunity to decide the fate of this task
     ///
@@ -40,6 +41,9 @@ public protocol _QueuedTask: Codable {
     ///     - totalAttempts: The amount of attempts thus far, including the failed one`
     func onExecutionFailure(failureContext: QueuedTaskFailure<ExecutionContext>) async throws -> TaskExecutionFailureAction
 }
+
+/// A publically non-initializable type that prevents users from overriding `onDequeueTask`
+public struct _DequeueResult {}
 
 extension _QueuedTask {
     public static var category: String { String(describing: Self.self) }
