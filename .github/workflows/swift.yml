@@ -3,10 +3,10 @@ name: Swift
 on:
   push:
     branches:
-      - master/7.0
+      - main
   pull_request:
     branches:
-      - master/7.0
+      - main
 
 jobs:
   test-linux:
