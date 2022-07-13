@@ -6,8 +6,6 @@ final class MongoQueueTests: XCTestCase {
     static var ranTasks = 0
     let settings = try! ConnectionSettings("mongodb://\(ProcessInfo.processInfo.environment["MONGO_HOSTNAME_A"] ?? "localhost")/queues")
     
-    // trigger ci change
-    
     func testExample() async throws {
         Self.ranTasks = 0
         let db = try await MongoDatabase.connect(to: settings)
