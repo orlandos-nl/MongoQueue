@@ -4,7 +4,7 @@ import MongoKitten
 
 final class MongoQueueTests: XCTestCase {
     static var ranTasks = 0
-    let settings = ConnectionSettings("mongodb://\(ProcessInfo.processInfo.environment["MONGO_HOSTNAME_A"] ?? "localhost")/queues")
+    let settings = try! ConnectionSettings("mongodb://\(ProcessInfo.processInfo.environment["MONGO_HOSTNAME_A"] ?? "localhost")/queues")
     
     func testExample() async throws {
         Self.ranTasks = 0
