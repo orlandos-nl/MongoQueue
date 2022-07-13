@@ -4,10 +4,11 @@ import MongoKitten
 
 final class MongoQueueTests: XCTestCase {
     static var ranTasks = 0
+    let settings = try! ConnectionSettings("mongodb://\(ProcessInfo.processInfo.environment["MONGO_HOSTNAME_A"] ?? "localhost")/queues")
     
     func testExample() async throws {
         Self.ranTasks = 0
-        let db = try await MongoDatabase.connect(to: "mongodb://localhost/queues")
+        let db = try await MongoDatabase.connect(to: settings)
         let queue = MongoQueue(collection: db["tasks"])
         queue.registerTask(_Task.self, context: ())
         try await queue.queueTask(_Task(message: 0))
@@ -24,7 +25,7 @@ final class MongoQueueTests: XCTestCase {
     
     func test_recurringTask() async throws {
         Self.ranTasks = 0
-        let db = try await MongoDatabase.connect(to: "mongodb+srv://..")
+        let db = try await MongoDatabase.connect(to: settings)
         let queue = MongoQueue(collection: db["tasks"])
         queue.registerTask(RTRecurringTask.self, context: ())
         try await queue.queueTask(RTRecurringTask())
