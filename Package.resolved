@@ -3,11 +3,11 @@
     "pins": [
       {
         "package": "BSON",
-        "repositoryURL": "https://github.com/OpenKitten/BSON.git",
+        "repositoryURL": "https://github.com/orlandos-nl/BSON.git",
         "state": {
           "branch": null,
-          "revision": "98a2c90988895f1b985ed0066180995df995924c",
-          "version": "7.0.28"
+          "revision": "e5f3c18e89048961156f3cb3af7f662979a2d0a9",
+          "version": "8.0.1"
         }
       },
       {
@@ -15,13 +15,13 @@
         "repositoryURL": "https://github.com/orlandos-nl/MongoKitten.git",
         "state": {
           "branch": null,
-          "revision": "c3ca3bec61fec81c06d2275df8cde2dee72d1cab",
-          "version": "6.7.5"
+          "revision": "4850c77a604fa10fc16c8ccac0d808b6461a0f74",
+          "version": "7.0.0"
         }
       },
       {
         "package": "DNSClient",
-        "repositoryURL": "https://github.com/OpenKitten/NioDNS.git",
+        "repositoryURL": "https://github.com/orlandos-nl/NioDNS.git",
         "state": {
           "branch": null,
           "revision": "71cfedd3310d59b7d19e290176dd2a1a605a4252",

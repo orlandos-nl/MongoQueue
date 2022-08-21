@@ -82,25 +82,24 @@ internal struct KnownType {
             
             // We're early on the updates, so that we don't get dequeued
             let interval = Swift.max(task.maxTaskDuration - 15, 1)
-            let executionUpdates = collection.nio.eventLoop.scheduleRepeatedAsyncTask(
-                initialDelay: .seconds(Int64(interval)),
-                delay: .seconds(Int64(interval)),
-                notifying: nil
-            ) { executionUpdates in
-                collection.nio.findOneAndUpdate(
-                    where: "_id" == taskId  ,
-                    to: [
-                        "$set": [
-                            "execution.lastUpdate": Date()
+            let executionUpdates = Task {
+                while !Task.isCancelled {
+                    try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
+                    _ = try await collection.findOneAndUpdate(
+                        where: "_id" == taskId  ,
+                        to: [
+                            "$set": [
+                                "execution.lastUpdate": Date()
+                            ]
                         ]
-                    ]
-                ).execute().map { _ in }
+                    ).execute()
+                }
             }
             
             defer { executionUpdates.cancel() }
             try await metadata.execute(withContext: context)
             
-            try await metadata.onDequeueTask(task, withContext: context, inQueue: queue)
+            _ = try await metadata._onDequeueTask(task, withContext: context, inQueue: queue)
         } catch {
             logger.error("Execution failure for task \(task._id) in category \"\(T.category))\": \(error.localizedDescription)")
             let failureContext = QueuedTaskFailure(
