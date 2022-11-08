@@ -219,6 +219,7 @@ public final class MongoQueue {
         } catch {
             // Task execution failed due to a MongoDB error
             // Otherwise the return type would specify the task status
+            logger.log(level: .error, "\(error)")
             serverHasData = false
         }
     }
@@ -238,6 +239,7 @@ public final class MongoQueue {
             } catch {
                 // Task execution failed due to a MongoDB error
                 // Otherwise the return type would specify the task status
+                logger.log(level: .error, "\(error)")
                 serverHasData = false
             }
         }
@@ -255,6 +257,8 @@ public final class MongoQueue {
         guard reply.insertCount == 1 else {
             throw MongoQueueError.taskCreationFailed
         }
+        
+        serverHasData = true
     }
     
     private func findAndRequeueStaleTasks() async throws {
