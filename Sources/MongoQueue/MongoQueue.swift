@@ -13,7 +13,6 @@ public final class MongoQueue {
     private var task: Task<Void, Never>?
     public var newTaskPollingFrequency = NIO.TimeAmount.milliseconds(1000)
     public var stalledTaskPollingFrequency = NIO.TimeAmount.seconds(30)
-//    private let executingTasks = ExecutingTasks()
     
     public init(collection: MongoCollection) {
         self.collection = collection
@@ -139,7 +138,14 @@ public final class MongoQueue {
             } while !Task.isCancelled
         }
         
-        if let wireVersion = await collection.database.pool.wireVersion, wireVersion.supportsCollectionChangeStream {
+        let pool = collection.database.pool
+        
+        if
+            let wireVersion = await pool.wireVersion,
+            wireVersion.supportsCollectionChangeStream,
+            let hosts = try await pool.next(for: .writable).serverHandshake?.hosts,
+            hosts.count > 0
+        {
             try await cursorInitiatedTick()
             try await self.startChangeStreamTicks()
         } else {
@@ -207,6 +213,7 @@ public final class MongoQueue {
         } catch {
             // Task execution failed due to a MongoDB error
             // Otherwise the return type would specify the task status
+            logger.error("\(error)")
             serverHasData = false
         }
     }
@@ -226,6 +233,7 @@ public final class MongoQueue {
             } catch {
                 // Task execution failed due to a MongoDB error
                 // Otherwise the return type would specify the task status
+                logger.error("\(error)")
                 serverHasData = false
             }
         }
@@ -243,6 +251,8 @@ public final class MongoQueue {
         guard reply.insertCount == 1 else {
             throw MongoQueueError.taskCreationFailed
         }
+        
+        serverHasData = true
     }
     
     private func findAndRequeueStaleTasks() async throws {
