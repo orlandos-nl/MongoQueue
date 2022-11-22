@@ -125,7 +125,7 @@ public final class MongoQueue {
         }
     }
     
-    public func run() async throws {
+    public func run(enableCursors: Bool = true) async throws {
         if started {
             throw MongoQueueError.alreadyStarted
         }
@@ -154,7 +154,7 @@ public final class MongoQueue {
         let pool = collection.nio.database.pool
         let connection = try await pool.next(for: .init(writable: true)).get()
         let hosts = connection.serverHandshake?.hosts ?? []
-        if let wireVersion = pool.wireVersion, wireVersion.supportsCollectionChangeStream, hosts.count > 1 {
+        if let wireVersion = pool.wireVersion, wireVersion.supportsCollectionChangeStream, hosts.count > 1, enableCursors {
             try await cursorInitiatedTick()
             try await self.startChangeStreamTicks()
         } else {
