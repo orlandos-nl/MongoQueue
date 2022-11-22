@@ -151,7 +151,10 @@ public final class MongoQueue {
             }
         }
         
-        if let wireVersion = collection.nio.database.pool.wireVersion, wireVersion.supportsCollectionChangeStream {
+        let pool = collection.nio.database.pool
+        let connection = try await pool.next(for: .init(writable: true)).get()
+        let hosts = connection.serverHandshake?.hosts ?? []
+        if let wireVersion = pool.wireVersion, wireVersion.supportsCollectionChangeStream, hosts.count > 1 {
             try await cursorInitiatedTick()
             try await self.startChangeStreamTicks()
         } else {
