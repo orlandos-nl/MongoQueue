@@ -3,7 +3,7 @@ import MongoCore
 import Foundation
 import Meow
 
-// TODO: ReadConcern majority in >= MongoDB 4.2
+/// A MongoQueue is a queue that uses MongoDB as a backend for storing tasks. It is designed to be used in a distributed environment.
 public final class MongoQueue {
     internal let collection: MongoCollection
     internal let logger = Logger(label: "org.openkitten.mongo-queues")
@@ -12,12 +12,19 @@ public final class MongoQueue {
     private var serverHasData = true
     private var task: Task<Void, Never>?
     public var newTaskPollingFrequency = NIO.TimeAmount.milliseconds(1000)
+
+    /// The frequency at which the queue will check for stalled tasks. Defaults to 30 seconds. This is the time after which a task is considered stalled and will be requeued.
     public var stalledTaskPollingFrequency = NIO.TimeAmount.seconds(30)
     
+    /// Creates a new MongoQueue with the given collection as a backend for storing tasks.
     public init(collection: MongoCollection) {
         self.collection = collection
     }
     
+    /// Registers a task type to the queue. This is required for the queue to be able to perform the task.
+    /// - Parameters:
+    ///  - type: The type of the task to register (e.g. `MyTask.self`)
+    /// - context: The context in which the task should be executed in (e.g. a `Request`)
     public func registerTask<T: _QueuedTask>(
         _ type: T.Type,
         context: T.ExecutionContext
@@ -25,6 +32,11 @@ public final class MongoQueue {
         knownTypes.append(KnownType(type: type, queue: self, logger: logger, context: context))
     }
     
+    /// Suspends all tasks of the given type that match the given filter.
+    /// - Parameters:
+    /// - type: The type of the task to suspend (e.g. `MyTask.self`)
+    /// - filter: A filter to match tasks against. Defaults to an empty filter, which will match all tasks of the given type.
+    /// - Returns: The number of tasks that were suspended.
     @discardableResult
     public func suspendTasks<T: _QueuedTask>(ofType type: T.Type, where filter: Document = [:]) async throws -> UpdateReply {
         try await collection.updateMany(
@@ -39,6 +51,11 @@ public final class MongoQueue {
         )
     }
     
+    /// Unsuspends all tasks of the given type that match the given filter.
+    /// - Parameters:
+    /// - type: The type of the task to unsuspend (e.g. `MyTask.self`)
+    /// - filter: A filter to match tasks against. Defaults to an empty filter, which will match all tasks of the given type.
+    /// - Returns: The number of tasks that were unsuspended.
     @discardableResult
     public func unsuspendTasks<T: _QueuedTask>(ofType type: T.Type, where filter: Document = [:]) async throws -> UpdateReply {
         try await collection.updateMany(
@@ -53,11 +70,21 @@ public final class MongoQueue {
         )
     }
     
+    /// Suspends all tasks of the given type that match the given filter.
+    /// - Parameters:
+    /// - type: The type of the task to suspend (e.g. `MyTask.self`)
+    /// - filter: A filter to match tasks against. Defaults to an empty filter, which will match all tasks of the given type.
+    /// - Returns: The number of tasks that were suspended.
     @discardableResult
     public func suspendTasks<T: _QueuedTask, Q: MongoKittenQuery>(ofType type: T.Type, where filter: Q) async throws -> UpdateReply {
         try await suspendTasks(ofType: type, where: filter.makeDocument())
     }
     
+    /// Unsuspends all tasks of the given type that match the given filter.
+    /// - Parameters:
+    /// - type: The type of the task to unsuspend (e.g. `MyTask.self`)
+    /// - filter: A filter to match tasks against. Defaults to an empty filter, which will match all tasks of the given type.
+    /// - Returns: The number of tasks that were unsuspended.
     @discardableResult
     public func unsuspendTasks<T: _QueuedTask, Q: MongoKittenQuery>(ofType type: T.Type, where filter: Q) async throws -> UpdateReply {
         try await unsuspendTasks(ofType: type, where: filter.makeDocument())
@@ -108,6 +135,7 @@ public final class MongoQueue {
         }
     }
     
+    /// Runs the queue in the background. This will return immediately and the queue will run in the background.
     @discardableResult
     public func runInBackground() throws -> Task<Void, Error> {
         if started {
@@ -119,6 +147,7 @@ public final class MongoQueue {
         }
     }
     
+    /// Runs the queue. This will return when the queue is stopped. 
     public func run() async throws {
         if started {
             throw MongoQueueError.alreadyStarted
@@ -153,6 +182,7 @@ public final class MongoQueue {
         }
     }
     
+    /// Stops the queue. This will return immediately and the queue will stop running.
     public func shutdown() {
         self.started = false
     }
@@ -239,6 +269,7 @@ public final class MongoQueue {
         }
     }
     
+    /// Queues a task for execution. The task will be executed after the specified Date.
     public func queueTask<T: _QueuedTask>(_ task: T) async throws {
         assert(knownTypes.contains(where: { $0.category == T.category }))
         

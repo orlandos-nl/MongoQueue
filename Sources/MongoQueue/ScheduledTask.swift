@@ -3,6 +3,8 @@ import MongoCore
 import Foundation
 import Meow
 
+/// A task that is scheduled to be executed at a specific moment in time.
+/// This task will be executed once, and then removed from the queue.
 public protocol ScheduledTask: _QueuedTask {
     /// The date that you want this to be executed (delay)
     /// If you want it to be immediate, use `Date()`
@@ -49,6 +51,7 @@ extension ScheduledTask {
         return _DequeueResult()
     }
     
+    /// The configuration for this task. This is used to identify the task within the queue, for internal use.
     public var configuration: _TaskConfiguration {
         let scheduled = ScheduledTaskConfiguration(
             scheduledDate: taskExecutionDate,

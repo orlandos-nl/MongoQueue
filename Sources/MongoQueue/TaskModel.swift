@@ -4,6 +4,7 @@ import Foundation
 import Meow
 import Foundation
 
+/// The priority of your task, used to determine the order in which tasks are executed.
 public struct TaskPriority {
     internal enum _Raw: Int, Codable {
         case relaxed = -2, lower = -1, normal = 0, higher = 1, urgent = 2
@@ -23,7 +24,7 @@ public struct TaskPriority {
     /// This is needed fast, think of real-time communication
     public static let higher = TaskPriority(raw: .higher)
     
-    /// THIS SHOULDN'T WAIT
+    /// THIS SHOULD NOT WAIT
     /// Though, if something is to be executed _immediately_, you probably shouldn't use a job queue
     public static let urgent = TaskPriority(raw: .urgent)
 }
@@ -53,6 +54,7 @@ public struct TaskStatus {
     public static let dequeued = TaskStatus(raw: .dequeued)
 }
 
+/// The model that is used to store tasks in the database.
 public struct TaskModel: Codable {
     struct ExecutingContext: Codable {
         enum EndState: String, Codable {
@@ -157,6 +159,7 @@ public struct TaskModel: Codable {
     }
 }
 
+/// The configuration of a task, used to determine when the task should be executed. This is a wrapper around the actual configuration as to allow for future expansion.
 public struct _TaskConfiguration {
     internal enum _TaskConfiguration {
         case scheduled(ScheduledTaskConfiguration)

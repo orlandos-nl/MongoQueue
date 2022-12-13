@@ -3,6 +3,7 @@ import MongoCore
 import Foundation
 import Meow
 
+/// A task that can be executed on a recurring basis (e.g. every day, every month, etc)
 public protocol RecurringTask: _QueuedTask {
     /// The moment that you want this to be executed on (delay)
     /// If you want it to be immediate, use `Date()`
@@ -14,6 +15,9 @@ public protocol RecurringTask: _QueuedTask {
     var uniqueTaskKey: String { get }
     var taskExecutionDeadline: TimeInterval? { get }
     
+    /// Calculates the next moment that this task should be executed on (e.g. next month, next day, etc)
+    /// If you want to stop recurring, return `nil`.
+    /// - parameter context: The context that was used to execute the task.
     func getNextRecurringTaskDate(_ context: ExecutionContext) async throws -> Date?
 }
 
@@ -41,6 +45,7 @@ struct ScheduledInterval: Codable {
 }
 
 extension RecurringTask {
+    /// The deadline for this task to be executed on. After this deadline, the task will not be executed, even if it is still in the queue.
     public var taskExecutionDeadline: TimeInterval? { nil }
     
     public func _onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws -> _DequeueResult {
@@ -79,6 +84,7 @@ extension RecurringTask {
         return _DequeueResult()
     }
     
+    /// The configuration for this task. This is used to identify the task within the queue, for internal use.
     public var configuration: _TaskConfiguration {
         let recurring = RecurringTaskConfiguration(
             scheduledDate: initialTaskExecutionDate,
