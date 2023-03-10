@@ -1,4 +1,4 @@
-# MongoQueue
+# <img height="200px" style="float: right;" src="https://user-images.githubusercontent.com/1951674/224335889-c6345081-fef9-4b01-95ba-c3a718aa91e9.png" /> MongoQueue
 
 A [MongoKitten](https://github.com/orlandos-nl/MongoKitten) based JobQueue for MongoDB.
 
