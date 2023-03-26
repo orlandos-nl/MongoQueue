@@ -22,6 +22,52 @@ final class MongoQueueTests: XCTestCase {
         
         XCTAssertEqual(Self.ranTasks, 4)
     }
+
+    @available(macOS 13.0, *)
+    func testMaxParallelJobs() async throws {
+        let db = try await MongoDatabase.connect(to: settings)
+        let queue = MongoQueue(collection: db["tasks"])
+        queue.setMaxParallelJobs(to: 6)
+        queue.registerTask(SlowTask.self, context: ())
+
+        let start = Date()
+
+        try await queue.queueTask(SlowTask())
+        try await queue.queueTask(SlowTask())
+        try await queue.queueTask(SlowTask())
+        try await queue.queueTask(SlowTask())
+        try await queue.queueTask(SlowTask())
+        try await queue.queueTask(SlowTask())
+
+        try await queue.runUntilEmpty()
+
+        XCTAssertLessThanOrEqual(-start.timeIntervalSinceNow, 2)
+
+        XCTAssertEqual(Self.ranTasks, 6)
+    }
+
+    @available(macOS 13.0, *)
+    func testMaxParallelJobsLow() async throws {
+        let db = try await MongoDatabase.connect(to: settings)
+        let queue = MongoQueue(collection: db["tasks"])
+        queue.setMaxParallelJobs(to: 1)
+        queue.registerTask(SlowTask.self, context: ())
+
+        let start = Date()
+
+        try await queue.queueTask(SlowTask())
+        try await queue.queueTask(SlowTask())
+        try await queue.queueTask(SlowTask())
+        try await queue.queueTask(SlowTask())
+        try await queue.queueTask(SlowTask())
+        try await queue.queueTask(SlowTask())
+
+        try await queue.runUntilEmpty()
+
+        XCTAssertGreaterThanOrEqual(-start.timeIntervalSinceNow, 6)
+
+        XCTAssertEqual(Self.ranTasks, 6)
+    }
     
     func test_recurringTask() async throws {
         Self.ranTasks = 0
@@ -42,14 +88,30 @@ struct _Task: ScheduledTask {
     var taskExecutionDate: Date {
         Date()
     }
-    
+
     let message: Int
-    
+
     func execute(withContext context: Void) async throws {
         XCTAssertEqual(MongoQueueTests.ranTasks, message)
         MongoQueueTests.ranTasks += 1
     }
-    
+
+    func onExecutionFailure(failureContext: QueuedTaskFailure<()>) async throws -> TaskExecutionFailureAction {
+        return .dequeue()
+    }
+}
+
+@available(macOS 13.0, *)
+struct SlowTask: ScheduledTask {
+    var taskExecutionDate: Date {
+        Date()
+    }
+
+    func execute(withContext context: Void) async throws {
+        try await Task.sleep(for: .seconds(1))
+        MongoQueueTests.ranTasks += 1
+    }
+
     func onExecutionFailure(failureContext: QueuedTaskFailure<()>) async throws -> TaskExecutionFailureAction {
         return .dequeue()
     }

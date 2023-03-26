@@ -70,6 +70,26 @@ try await queue.queueTask(task)
 
 Tada! Just wait for it to be executed.
 
+## Testing
+
+You can run all currently active jobs in the queue one-by-one using:
+
+```swift
+try await queue.runUntilEmpty()
+``` 
+
+This will not run any jobs scheduled for the future, and will exit once there are no current jobs available.
+
+## Parallelisation
+
+You can set the parallelisation amount **per job queue instance** using the following code:
+
+```swift
+queue.setMaxParallelJobs(to: 6)
+```
+
+If you have two containers running an instance of MongoQueue, it will therefore be able to run `2 * 6 = 12` jobs simultaneously.
+
 # Advanced Use
 
 Before diving into more (detailed) APIs, here's an overview of how this works:

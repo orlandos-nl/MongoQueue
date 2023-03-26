@@ -10,6 +10,7 @@ public final class MongoQueue {
     private var knownTypes = [KnownType]()
     private var started = false
     private var serverHasData = true
+    private var maxParallelJobs = 1
     private var task: Task<Void, Never>?
     public var newTaskPollingFrequency = NIO.TimeAmount.milliseconds(1000)
 
@@ -19,6 +20,10 @@ public final class MongoQueue {
     /// Creates a new MongoQueue with the given collection as a backend for storing tasks.
     public init(collection: MongoCollection) {
         self.collection = collection
+    }
+
+    public func setMaxParallelJobs(to max: Int) {
+        maxParallelJobs = max
     }
     
     /// Registers a task type to the queue. This is required for the queue to be able to perform the task.
@@ -109,13 +114,13 @@ public final class MongoQueue {
             ],
             returnValue: .modified
         )
-            .sort([
-                "priority": .descending,
-                "executeBefore": .ascending,
-                "creationDate": .ascending
-            ])
-            .writeConcern(writeConcern)
-            .execute()
+        .sort([
+            "priority": .descending,
+            "executeBefore": .ascending,
+            "creationDate": .ascending
+        ])
+        .writeConcern(writeConcern)
+        .execute()
         
         guard let taskDocument = reply.value else {
             // No task found
@@ -144,6 +149,50 @@ public final class MongoQueue {
         
         return Task {
             try await self.run()
+        }
+    }
+
+    public func runUntilEmpty() async throws {
+        struct TickResult {
+            var errors: [Error]
+            var tasksRan: Int
+        }
+
+        while !Task.isCancelled {
+            let result = try await withThrowingTaskGroup(
+                of: TaskExecutionResult.self,
+                returning: TickResult.self
+            ) { group in
+                for _ in 0..<maxParallelJobs {
+                    group.addTask {
+                        try await self.runNextTask()
+                    }
+                }
+
+                return try await group.reduce(TickResult(errors: [], tasksRan: 0)) { result, taskReslt in
+                    var result = result
+
+                    switch taskReslt {
+                    case .taskSuccessful:
+                        result.tasksRan += 1
+                    case .taskFailure(let error):
+                        result.tasksRan += 1
+                        result.errors.append(error)
+                    case .noneExecuted:
+                        ()
+                    }
+
+                    return result
+                }
+            }
+
+            for error in result.errors {
+                logger.error("\(error)")
+            }
+
+            if result.tasksRan < self.maxParallelJobs {
+                return
+            }
         }
     }
     
@@ -233,7 +282,10 @@ public final class MongoQueue {
     private func cursorInitiatedTick() async throws {
         do {
             switch try await self.runNextTask() {
-            case .taskSuccessful, .taskFailure:
+            case .taskFailure(let error):
+                logger.error("\(error)")
+                fallthrough
+            case .taskSuccessful:
                 Task {
                     try await self.cursorInitiatedTick()
                 }
@@ -253,13 +305,9 @@ public final class MongoQueue {
             if !serverHasData {
                 try await Task.sleep(nanoseconds: UInt64(newTaskPollingFrequency.nanoseconds))
             }
-            
+
             do {
-                if case .noneExecuted = try await self.runNextTask() {
-                    serverHasData = false
-                } else {
-                    serverHasData = true
-                }
+                try await runUntilEmpty()
             } catch {
                 // Task execution failed due to a MongoDB error
                 // Otherwise the return type would specify the task status
