@@ -179,7 +179,7 @@ public final class MongoQueue {
                         result.tasksRan += 1
                         result.errors.append(error)
                     case .noneExecuted:
-                        ()
+                        self.serverHasData = false
                     }
 
                     return result
