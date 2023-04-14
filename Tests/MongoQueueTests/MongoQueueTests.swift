@@ -24,7 +24,7 @@ final class MongoQueueTests: XCTestCase {
     
     func test_recurringTask() async throws {
         Self.ranTasks = 0
-        let db = try MongoDatabase.synchronousConnect("mongodb+srv://..")
+        let db = try MongoDatabase.synchronousConnect("mongodb://localhost/queues")
         let queue = MongoQueue(collection: db["tasks"])
         queue.registerTask(RTRecurringTask.self, context: ())
         try await queue.queueTask(RTRecurringTask())

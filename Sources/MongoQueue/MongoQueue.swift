@@ -261,25 +261,39 @@ public final class MongoQueue {
     }
     
     private func findAndRequeueStaleTasks() async throws {
-        for type in knownTypes {
-            let executingTasks = try await collection.find(
-                "category" == type.category && "status" == TaskStatus.executing.raw.rawValue
-            ).decode(TaskModel.self).execute().get()
-            
-            for try await task in executingTasks {
-                if
-                    let lastUpdateDate = task.execution?.lastUpdate,
-                    lastUpdateDate.addingTimeInterval(task.maxTaskDuration) <= Date()
-                {
-                    logger.info("Dequeueing stale task id \(task._id) of type \(task.category)")
-                    _ = try await collection.findOneAndUpdate(where: "_id" == task._id, to: [
-                        "$set": [
-                            "status": TaskStatus.scheduled.raw.rawValue,
-                            "execution": Null()
-                        ] as Document
-                    ]).execute()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for type in knownTypes {
+                group.addTask {
+                    let executingTasks = try await self.collection.find(
+                        "category" == type.category && "status" == TaskStatus.executing.raw.rawValue
+                    ).decode(TaskModel.self).execute().get()
+
+                    for try await task in executingTasks {
+                        if
+                            let lastUpdateDate = task.execution?.lastUpdate,
+                            lastUpdateDate.addingTimeInterval(task.maxTaskDuration) <= Date()
+                        {
+                            async let _ = await self.requeueStaleTask(task)
+                        }
+                    }
                 }
             }
+
+            try await group.waitForAll()
+        }
+    }
+
+    private func requeueStaleTask(_ task: TaskModel) async {
+        self.logger.info("Dequeueing stale task id \(task._id) of type \(task.category)")
+        do {
+            _ = try await self.collection.findOneAndUpdate(where: "_id" == task._id, to: [
+                "$set": [
+                    "status": TaskStatus.scheduled.raw.rawValue,
+                    "execution": Null()
+                ] as Document
+            ]).execute()
+        } catch {
+            self.logger.error("Failed to dequeue stale task id \(task._id) of type \(task.category)")
         }
     }
 }
