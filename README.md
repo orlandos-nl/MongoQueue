@@ -20,22 +20,13 @@ Select a collection for your job queue:
 let queue = MongoQueue(collection: db["tasks"])
 ```
 
-Start the queue in the background (for use inside HTTP applications):
-
-```swift
-try queue.runInBackground()
-```
-
-Alternatively, run the queue in the foreground and block until the queue is stopped. Only use this if your queue worker is only running as a worker. I.E., it isn't serving users on the side.
-
-```swift
-try await queue.run()
-```
-
 Define your jobs by conforming to `ScheduledTask` (and implicitly `Codable`):
 
 ```swift
 struct RegistrationEmailTask: ScheduledTask {
+    // This type has no context
+    typealias ExecutionContext = Void
+
     // Computed property, required by ScheduledTask
     // This executed the task ASAP
     var taskExecutionDate: Date { Date() }
@@ -45,16 +36,35 @@ struct RegistrationEmailTask: ScheduledTask {
     let userId: ObjectId
     let fullName: String
     
-    func execute(withContext context: Void) async throws {
+    func execute(withContext context: ExecutionContext) async throws {
         // TODO: Send the email
         // Throwing an error triggers `onExecutionFailure`
     }
     
-    func onExecutionFailure(failureContext: QueuedTaskFailure<()>) async throws -> TaskExecutionFailureAction {
+    func onExecutionFailure(failureContext: QueuedTaskFailure<ExecutionContext>) async throws -> TaskExecutionFailureAction {
         // Only attempt the job once. Failing to send the email cancels the job
         return .dequeue()
     }
 }
+```
+
+Register the task to MongoQueue, before it starts.
+
+```swift
+// Context is `Void`, so we pass in a void here
+queue.registerTask(RegistrationEmailTask.self, context: ())
+```
+
+Start the queue in the background - this is helpful in use inside HTTP applications - or when creating separate workers.
+
+```swift
+try queue.runInBackground()
+```
+
+Alternatively, run the queue in the foreground and block until the queue is stopped. Only use this if your queue worker is only running as a worker. I.E., it isn't serving users on the side.
+
+```swift
+try await queue.run()
 ```
 
 Queue the task in MongoDB:
