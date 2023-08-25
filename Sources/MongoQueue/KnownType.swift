@@ -32,6 +32,7 @@ internal struct KnownType {
         ofType type: T.Type,
         context: T.ExecutionContext
     ) async throws {
+        logger.debug("Executing task \(task._id) of category \"\(T.category)\"")
         let collection = queue.collection
         var metadata: T
         
@@ -98,10 +99,10 @@ internal struct KnownType {
             
             defer { executionUpdates.cancel() }
             try await metadata.execute(withContext: context)
-            
+            logger.debug("Successful execution: task \(task._id) of category \"\(T.category)\"")
             _ = try await metadata._onDequeueTask(task, withContext: context, inQueue: queue)
         } catch {
-            logger.error("Execution failure for task \(task._id) in category \"\(T.category))\": \(error.localizedDescription)")
+            logger.debug("Execution failure for task \(task._id) in category \"\(T.category))\": \(error.localizedDescription)")
             let failureContext = QueuedTaskFailure(
                 executionContext: context,
                 error: error,
@@ -120,10 +121,12 @@ internal struct KnownType {
                     let update = try await queue.collection.upsertEncoded(task, where: "_id" == task._id)
                     
                     guard update.updatedCount == 1 else {
+                        logger.error("Failed to soft-delete task \(task._id) of category \"\(T.category)\"")
                         throw MongoQueueError.dequeueTaskFailed
                     }
                 case .dequeue:
                     guard try await collection.deleteOne(where: "_id" == task._id).deletes == 1 else {
+                        logger.error("Failed to delete task \(task._id) of category \"\(T.category)\"")
                         throw MongoQueueError.dequeueTaskFailed
                     }
                 }
@@ -134,6 +137,7 @@ internal struct KnownType {
                 try await applyRemoval(removal)
             case .retry(maxAttempts: let maxAttempts, let removal):
                 if let maxAttempts = maxAttempts, task.attempts >= maxAttempts {
+                    logger.debug("Task Removal: task \(task._id) of category \"\(T.category)\" exceeded \(maxAttempts) attempts")
                     try await applyRemoval(removal)
                 } else {
                     task.status = .scheduled
@@ -145,6 +149,7 @@ internal struct KnownType {
                 }
             case .retryAfter(let nextInterval, maxAttempts: let maxAttempts, let removal):
                 if let maxAttempts = maxAttempts, task.attempts >= maxAttempts {
+                    logger.debug("Task Removal: task \(task._id) of category \"\(T.category)\" exceeded \(maxAttempts) attempts")
                     try await applyRemoval(removal)
                 } else {
                     task.status = .scheduled

@@ -212,7 +212,7 @@ public final class MongoQueue {
                 }
                 
                 _ = try? await queue.findAndRequeueStaleTasks()
-                _ = try? await Task.sleep(nanoseconds: UInt64(stalledTaskPollingFrequency.nanoseconds))
+                _ = try? await Task.sleep(nanoseconds: UInt64(queue.stalledTaskPollingFrequency.nanoseconds))
             } while !Task.isCancelled
         }
         
@@ -283,7 +283,7 @@ public final class MongoQueue {
         do {
             switch try await self.runNextTask() {
             case .taskFailure(let error):
-                logger.error("\(error)")
+                logger.debug("Failed to run task: \(error)")
                 fallthrough
             case .taskSuccessful:
                 Task {
@@ -295,7 +295,7 @@ public final class MongoQueue {
         } catch {
             // Task execution failed due to a MongoDB error
             // Otherwise the return type would specify the task status
-            logger.error("\(error)")
+            logger.error("Failed to run next task: \(error)")
             serverHasData = false
         }
     }
@@ -361,7 +361,7 @@ public final class MongoQueue {
     }
 
     private func requeueStaleTask(_ task: TaskModel) async {
-        self.logger.info("Dequeueing stale task id \(task._id) of type \(task.category)")
+        self.logger.debug("Dequeueing stale task id \(task._id) of type \(task.category)")
         do {
             _ = try await self.collection.findOneAndUpdate(where: "_id" == task._id, to: [
                 "$set": [
