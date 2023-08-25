@@ -90,6 +90,50 @@ queue.setMaxParallelJobs(to: 6)
 
 If you have two containers running an instance of MongoQueue, it will therefore be able to run `2 * 6 = 12` jobs simultaneously.
 
+## Integrate with Vapor
+
+To access the `queue` from your Vapor Request, add the following snippet:
+
+```swift
+import Vapor
+import MongoKitten
+import MongoQueue
+
+extension Request {
+  public var queue: MongoQueue {
+    return application.queue
+  }
+}
+
+private struct MongoQueueStorageKey: StorageKey {
+  typealias Value = MongoQueue
+}
+
+extension Application {
+  public var mongo: MongoQueue {
+    get {
+      storage[MongoQueueStorageKey.self]!
+    }
+    set {
+      storage[MongoQueueStorageKey.self] = newValue
+    }
+  }
+
+  public func initializeMongoQueue(withCollection collection: MongoCollection) {
+    self.queue = MongoQueue(collection: collection)
+  }
+}
+```
+
+From here, you can add tasks as such:
+
+```swift
+app.post("tasks") { req in
+  try await req.queue.queueTask(MyCustomTask())
+  return HTTPStatus.created
+}
+```
+
 # Advanced Use
 
 Before diving into more (detailed) APIs, here's an overview of how this works:
