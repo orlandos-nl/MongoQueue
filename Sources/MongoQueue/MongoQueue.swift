@@ -319,7 +319,10 @@ public final class MongoQueue {
     
     /// Queues a task for execution. The task will be executed after the specified Date.
     public func queueTask<T: _QueuedTask>(_ task: T) async throws {
-        assert(knownTypes.contains(where: { $0.category == T.category }))
+        assert(
+            knownTypes.contains(where: { $0.category == T.category }),
+            "Task `\(T.self)` is not a known type in MongoQueue. Did you forget to register it using `queue.registerTask`?"
+        )
         
         let model = try TaskModel(representing: task)
         
