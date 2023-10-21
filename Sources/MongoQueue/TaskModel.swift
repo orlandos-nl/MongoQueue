@@ -18,10 +18,10 @@ public struct TaskPriority {
     /// Not as urgent as regular user actions, but please do not take all the time in the world
     public static let lower = TaskPriority(raw: .lower)
     
-    /// Regular user actions
+    /// Regular user actions, this is the default value
     public static let normal = TaskPriority(raw: .normal)
     
-    /// This is needed fast, think of real-time communication
+    /// This is needed faster than other items
     public static let higher = TaskPriority(raw: .higher)
     
     /// THIS SHOULD NOT WAIT
@@ -86,7 +86,7 @@ public struct TaskModel: Codable {
     
     let _id: ObjectId
     
-    /// Contains `Task.name`
+    /// Contains `Task.name`, used to identify how to decode the `metadata`
     let category: String
     let group: String?
     let uniqueKey: String?
@@ -97,10 +97,16 @@ public struct TaskModel: Codable {
     var executeBefore: Date?
     var attempts: Int
     var status: TaskStatus._Raw
+
+    /// The Task's stored properties, created by encoding the task using BSONEncoder
     var metadata: Document
     
+    /// When this is set in the database, this task is currently being executed
     var execution: ExecutingContext?
+
+    /// The maximum time that this task is expected to take. If the task takes longer than this, `execution.lasUpdate` **must** be updated before the time expires. If the times expires, the task's runner is assumed to be killed, and the task will be re-queued for execution.
     let maxTaskDuration: TimeInterval
+
 //    let allowsParallelisation: Bool
     
     private enum ConfigurationType: String, Codable {
@@ -160,6 +166,8 @@ public struct TaskModel: Codable {
 }
 
 /// The configuration of a task, used to determine when the task should be executed. This is a wrapper around the actual configuration as to allow for future expansion.
+///
+/// - Warning: Do not interact with this type yourself. It exists as a means to discourage/prevent users from creating custom Task types. If you need a different Task type, open an issue instead!
 public struct _TaskConfiguration {
     internal enum _TaskConfiguration {
         case scheduled(ScheduledTaskConfiguration)
@@ -179,7 +187,7 @@ struct RecurringTaskConfiguration: Codable {
     let deadline: TimeInterval?
 }
 
-public struct ScheduledTaskConfiguration: Codable {
+struct ScheduledTaskConfiguration: Codable {
     let scheduledDate: Date
     let executeBefore: Date?
 }

@@ -4,6 +4,26 @@ import Foundation
 import Meow
 
 /// A MongoQueue is a queue that uses MongoDB as a backend for storing tasks. It is designed to be used in a distributed environment.
+///
+/// 1. First, connect to MongoDB and create the MongoQueue.
+/// 2. Then, register your tasks _with_ ExecutionContext.
+/// 3. Finally, start the job queue.
+///
+/// ```swift
+/// import MongoKitten
+///
+/// let db = try await MongoDatabase.connect(to: "mongodb://localhost/my-db")
+/// let queue = MongoQueue(db["job-queue"])
+/// queue.registerTask(Reminder.self, context: executionContext)
+/// // Run the queue until it's stopped or a cancellation is received
+/// try await queue.run()
+/// ```
+///
+/// To insert a new task into the queue:
+///
+/// ```swift
+/// try await queue.queueTask(Reminder(username: "Joannis"))
+/// ```
 public final class MongoQueue {
     internal let collection: MongoCollection
     internal let logger = Logger(label: "org.openkitten.mongo-queues")
@@ -317,7 +337,7 @@ public final class MongoQueue {
         }
     }
     
-    /// Queues a task for execution. The task will be executed after the specified Date.
+    /// Queues a task for execution.
     public func queueTask<T: _QueuedTask>(_ task: T) async throws {
         assert(
             knownTypes.contains(where: { $0.category == T.category }),

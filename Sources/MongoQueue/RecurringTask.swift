@@ -3,9 +3,50 @@ import MongoCore
 import Foundation
 import Meow
 
-/// A task that can be executed on a recurring basis (e.g. every day, every month, etc)
+/// A protocol that describes a task that can be executed on a recurring basis (e.g. every day, every month, etc)
+///
+/// When conforming to this type, you're also conforming to `Codable`. Using this Codable conformance, all stored properties will be stored in and retrieved from MongoDB. Your task's `execute` function represents your business logic of how tasks are handled, whereas the stored properties of this type represent the input you to execute this work.
+///
+/// The context provided into ``execute`` can be any type of your choosing, and is used as a means to execute the task. In the case of an newsletter task, this would be the email client.
+///
+/// ```swift
+/// struct DailyReminder: RecurringTask {
+///   typealias ExecutionContext = SMTPClient
+///
+///   // Stored properties are encoded to MongoDB
+///   // When the task runs, they'll be decodd into a new `Reminder` instance
+///   // After which `execute` will be called
+///   let username: String
+///
+///   // A mandatory property, allowing MongoQueue to set the initial execution date
+///   // In this case, MongoQueue will set the execution date to "now".
+///   // This causes the task to be ran as soon as possible.
+///   // Because this is computed, the property is not stored in MongoDB.
+///   var initialTaskExecutionDate: Date { Date() }
+///
+///   // Your business logic for this task, which can `mutate` self.
+///   // This allow it to pass updated info into the next iteration.
+///   mutating func execute(withContext: context: ExecutionContext) async throws {
+///     print("I'm running! Wake up, \(username)")
+///   }
+///
+///   // Calculate the next time when this task should be executed again
+///   func getNextRecurringTaskDate(_ context: ExecutionContext) async throws -> Date? {
+///     // Re-run again in 24 hours
+///     return Date().addingTimeInterval(3600 * 24)
+///   }
+///
+///   // What to do when `execute` throws an error
+///   func onExecutionFailure(
+///     failureContext: QueuedTaskFailure<MyTaskContext>
+///   ) async throws -> TaskExecutionFailureAction {
+///      // Removes the task from the queue without re-attempting
+///      return .dequeue()
+///   }
+/// }
+/// ```
 public protocol RecurringTask: _QueuedTask {
-    /// The moment that you want this to be executed on (delay)
+    /// The moment that you want this to be first executed on (delay)
     /// If you want it to be immediate, use `Date()`
     var initialTaskExecutionDate: Date { get }
     
@@ -13,9 +54,12 @@ public protocol RecurringTask: _QueuedTask {
     /// If you want to have many tasks, but not duplicate the task, identify this task by the task key
     /// If you don't want this task to be uniquely identified, and you want to spawn many of them, use `UUID().uuidString`
     var uniqueTaskKey: String { get }
+
+    /// Tasks won't be executed after this moment
     var taskExecutionDeadline: TimeInterval? { get }
     
-    /// Calculates the next moment that this task should be executed on (e.g. next month, next day, etc)
+    /// Calculates the next moment that this task should be executed on (e.g. next month, next day, etc).
+    /// This is called _after_ your `execute` function has successfully completed the work.
     /// If you want to stop recurring, return `nil`.
     /// - parameter context: The context that was used to execute the task.
     func getNextRecurringTaskDate(_ context: ExecutionContext) async throws -> Date?
