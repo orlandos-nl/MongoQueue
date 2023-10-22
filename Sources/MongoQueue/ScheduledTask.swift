@@ -89,6 +89,7 @@ extension ScheduledTask {
     public var configuration: _TaskConfiguration {
         let scheduled = ScheduledTaskConfiguration(
             scheduledDate: taskExecutionDate,
+            uniqueTaskKey: uniqueTaskKey,
             executeBefore: taskExecutionDeadline
         )
         return _TaskConfiguration(value: .scheduled(scheduled))

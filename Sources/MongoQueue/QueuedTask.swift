@@ -20,7 +20,12 @@ public protocol _QueuedTask: Codable {
     /// The amount of urgency your task has. Tasks with higher priority take precedence over lower priorities.
     /// When priorities are equal, the earlier-created task is executed first.
     var priority: TaskPriority { get }
-    
+
+    /// If you want only one task of this type to exist, use a static task key
+    /// If you want to have many tasks, but not duplicate the task, identify this task by the task key
+    /// If you don't want this task to be uniquely identified, and you want to spawn many of them, use `UUID().uuidString`
+    var uniqueTaskKey: String { get }
+
     /// An internal configuration object that MongoQueue uses to pass around internal metadata
     ///
     /// - Warning: Do not implement or use this yourself, if you need this hook let us know
@@ -54,6 +59,7 @@ extension _QueuedTask {
     public static var category: String { String(describing: Self.self) }
     public var priority: TaskPriority { .normal }
     public var group: String? { nil }
+    public var uniqueTaskKey: String { UUID().uuidString }
     public var maxTaskDuration: TimeInterval { 10 * 60 }
 //    public var allowsParallelisation: Bool { false }
 }
