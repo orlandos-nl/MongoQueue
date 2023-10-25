@@ -26,6 +26,7 @@ final class MongoQueueTests: XCTestCase {
 
     @available(macOS 13.0, *)
     func testMaxParallelJobs() async throws {
+        Self.ranTasks = 0
         let db = try await MongoDatabase.connect(to: settings)
         try await db.drop()
         let queue = MongoQueue(collection: db["tasks"])
@@ -43,13 +44,14 @@ final class MongoQueueTests: XCTestCase {
 
         try await queue.runUntilEmpty()
 
-        XCTAssertLessThanOrEqual(-start.timeIntervalSinceNow, 2)
+        XCTAssertLessThanOrEqual(Date().timeIntervalSince(start), 2)
 
         XCTAssertEqual(Self.ranTasks, 6)
     }
 
     @available(macOS 13.0, *)
     func testMaxParallelJobsLow() async throws {
+        Self.ranTasks = 0
         let db = try await MongoDatabase.connect(to: settings)
         try await db.drop()
         let queue = MongoQueue(collection: db["tasks"])
@@ -67,7 +69,7 @@ final class MongoQueueTests: XCTestCase {
 
         try await queue.runUntilEmpty()
 
-        XCTAssertGreaterThanOrEqual(-start.timeIntervalSinceNow, 6)
+        XCTAssertLessThanOrEqual(Date().timeIntervalSince(start), 7)
 
         XCTAssertEqual(Self.ranTasks, 6)
     }
