@@ -49,11 +49,6 @@ public protocol RecurringTask: _QueuedTask {
     /// The moment that you want this to be first executed on (delay)
     /// If you want it to be immediate, use `Date()`
     var initialTaskExecutionDate: Date { get }
-    
-    /// If you want only one task of this type to exist, use a static task key
-    /// If you want to have many tasks, but not duplicate the task, identify this task by the task key
-    /// If you don't want this task to be uniquely identified, and you want to spawn many of them, use `UUID().uuidString`
-    var uniqueTaskKey: String { get }
 
     /// Tasks won't be executed after this moment
     var taskExecutionDeadline: TimeInterval? { get }
@@ -91,7 +86,7 @@ struct ScheduledInterval: Codable {
 extension RecurringTask {
     /// The deadline for this task to be executed on. After this deadline, the task will not be executed, even if it is still in the queue.
     public var taskExecutionDeadline: TimeInterval? { nil }
-    
+
     public func _onDequeueTask(_ task: TaskModel, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws -> _DequeueResult {
         do {
             guard case .recurring(let taskConfig) = try task.readConfiguration().value else {
@@ -132,7 +127,7 @@ extension RecurringTask {
     public var configuration: _TaskConfiguration {
         let recurring = RecurringTaskConfiguration(
             scheduledDate: initialTaskExecutionDate,
-            key: uniqueTaskKey,
+            uniqueTaskKey: uniqueTaskKey,
             deadline: taskExecutionDeadline
         )
         return _TaskConfiguration(value: .recurring(recurring))

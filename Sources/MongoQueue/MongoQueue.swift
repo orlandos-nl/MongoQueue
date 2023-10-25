@@ -25,6 +25,16 @@ import Meow
 /// try await queue.queueTask(Reminder(username: "Joannis"))
 /// ```
 public final class MongoQueue {
+    public struct Option: Hashable {
+        internal enum _Option: Hashable {
+            case uniqueKeysEnabled
+        }
+
+        internal let raw: _Option
+
+        public static let enableUniqueKeys = Option(raw: .uniqueKeysEnabled)
+    }
+
     internal let collection: MongoCollection
     internal let logger = Logger(label: "org.openkitten.mongo-queues")
     private var knownTypes = [KnownType]()
@@ -33,13 +43,20 @@ public final class MongoQueue {
     private var maxParallelJobs = 1
     private var task: Task<Void, Never>?
     public var newTaskPollingFrequency = NIO.TimeAmount.milliseconds(1000)
+    public let options: Set<Option>
 
     /// The frequency at which the queue will check for stalled tasks. Defaults to 30 seconds. This is the time after which a task is considered stalled and will be requeued.
     public var stalledTaskPollingFrequency = NIO.TimeAmount.seconds(30)
     
     /// Creates a new MongoQueue with the given collection as a backend for storing tasks.
+    public init(collection: MongoCollection, options: Set<Option>) {
+        self.collection = collection
+        self.options = options
+    }
+
     public init(collection: MongoCollection) {
         self.collection = collection
+        self.options = []
     }
 
     public func setMaxParallelJobs(to max: Int) {
@@ -173,6 +190,8 @@ public final class MongoQueue {
     }
 
     public func runUntilEmpty() async throws {
+        try await ensureIndexes()
+
         struct TickResult {
             var errors: [Error]
             var tasksRan: Int
@@ -237,7 +256,9 @@ public final class MongoQueue {
         }
         
         let pool = collection.database.pool
-        
+
+        try await ensureIndexes()
+
         if
             let wireVersion = await pool.wireVersion,
             wireVersion.supportsCollectionChangeStream,
@@ -255,7 +276,23 @@ public final class MongoQueue {
     public func shutdown() {
         self.started = false
     }
-    
+
+    /// - Note: Gets called automatically when you `run` the application.
+    public func ensureIndexes() async throws {
+        if options.contains(.enableUniqueKeys) {
+            var uniqueKeyIndex = CreateIndexes.Index(
+                named: "unique-task-by-key",
+                keys: [
+                    "uniqueKey": 1,
+                    "category": 1
+                ]
+            )
+            uniqueKeyIndex.unique = true
+            uniqueKeyIndex.partialFilterExpression = ["status": ["$in": ["scheduled", "executing"]]]
+            try await collection.createIndexes([uniqueKeyIndex])
+        }
+    }
+
     private func startChangeStreamTicks() async throws {
         // Using change stream cursor based polling
         var options = ChangeStreamOptions()

@@ -89,6 +89,8 @@ public struct TaskModel: Codable {
     /// Contains `Task.name`, used to identify how to decode the `metadata`
     let category: String
     let group: String?
+
+    /// If set, only one Task with this `uniqueKey` can be queued or executing for a given `category`
     let uniqueKey: String?
     
     let creationDate: Date
@@ -132,13 +134,13 @@ public struct TaskModel: Codable {
         switch task.configuration.value {
         case .scheduled(let configuration):
             self.configurationType = .scheduled
-            self.uniqueKey = nil
+            self.uniqueKey = configuration.uniqueTaskKey
             self.executeAfter = configuration.scheduledDate
             self.executeBefore = configuration.executeBefore
             self.configuration = try BSONEncoder().encode(configuration)
         case .recurring(let configuration):
             self.configurationType = .recurring
-            self.uniqueKey = configuration.key
+            self.uniqueKey = configuration.uniqueTaskKey
             self.executeAfter = configuration.scheduledDate
             self.executeBefore = configuration.deadline.map { deadline in
                 configuration.scheduledDate.addingTimeInterval(deadline)
@@ -183,11 +185,12 @@ public struct _TaskConfiguration {
 
 struct RecurringTaskConfiguration: Codable {
     let scheduledDate: Date
-    let key: String
+    let uniqueTaskKey: String
     let deadline: TimeInterval?
 }
 
 struct ScheduledTaskConfiguration: Codable {
     let scheduledDate: Date
+    let uniqueTaskKey: String?
     let executeBefore: Date?
 }
