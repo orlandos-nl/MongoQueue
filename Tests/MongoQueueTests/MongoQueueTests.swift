@@ -22,6 +22,7 @@ final class MongoQueueTests: XCTestCase {
         try await Task.sleep(nanoseconds: 10_000_000_000)
         
         XCTAssertEqual(Self.ranTasks, 4)
+        queue.shutdown()
     }
 
     @available(macOS 13.0, *)
@@ -47,6 +48,7 @@ final class MongoQueueTests: XCTestCase {
         XCTAssertLessThanOrEqual(Date().timeIntervalSince(start), 2)
 
         XCTAssertEqual(Self.ranTasks, 6)
+        queue.shutdown()
     }
 
     @available(macOS 13.0, *)
@@ -72,6 +74,7 @@ final class MongoQueueTests: XCTestCase {
         XCTAssertLessThanOrEqual(Date().timeIntervalSince(start), 7)
 
         XCTAssertEqual(Self.ranTasks, 6)
+        queue.shutdown()
     }
 
     func testNoDuplicateQueuedTasksOfSameUniqueKey() async throws {
@@ -100,6 +103,7 @@ final class MongoQueueTests: XCTestCase {
 
         try await queue.runUntilEmpty()
         try await queue.queueTask(UniqueTask())
+        queue.shutdown()
     }
 
     func testDuplicatedOfDifferentTasksCanExist() async throws {
@@ -147,6 +151,7 @@ final class MongoQueueTests: XCTestCase {
         try await queue.runUntilEmpty()
         try await queue.queueTask(UniqueTask())
         try await queue.queueTask(UniqueTask2())
+        queue.shutdown()
     }
 
     func test_recurringTask() async throws {
@@ -163,6 +168,7 @@ final class MongoQueueTests: XCTestCase {
         try await Task.sleep(nanoseconds: 5_000_000_000)
         
         XCTAssertEqual(Self.ranTasks, 5)
+        queue.shutdown()
     }
 }
 
