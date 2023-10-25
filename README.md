@@ -4,7 +4,7 @@ A [MongoKitten](https://github.com/orlandos-nl/MongoKitten) based JobQueue for M
 
 [Join our Discord](https://discord.gg/H6799jh) for any questions and friendly banter.
 
-[Read the Docs](https://orlandos.nl/docs/mongoqueue) for more info.
+[Read the Docs](https://swiftpackageindex.com/orlandos-nl/MongoQueue/main/documentation/mongoqueue) for more info.
 
 ### Quick Start
 
