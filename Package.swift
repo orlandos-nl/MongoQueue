@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "MongoQueue",
     platforms: [
-        .macOS(.v12),
+        .macOS(.v13),
         .iOS(.v15),
     ],
     products: [
@@ -17,7 +17,7 @@ let package = Package(
     ],
     dependencies: [
         // Dependencies declare other packages that this package depends on.
-        .package(url: "https://github.com/orlandos-nl/MongoKitten.git", from: "7.7.0"),
+        .package(url: "https://github.com/orlandos-nl/MongoKitten.git", from: "7.8.0"),
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
