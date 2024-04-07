@@ -16,7 +16,8 @@ jobs:
         dbimage:
           - mongo
         runner:
-          - swift:5.8-focal
+          - swift:5.9-focal
+          - swift:5.10-focal
           - swiftlang/swift:nightly-main-focal
     container: ${{ matrix.runner }}
     runs-on: ubuntu-latest
