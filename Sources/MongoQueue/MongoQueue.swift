@@ -1,5 +1,6 @@
 import Logging
 import MongoCore
+import NIOConcurrencyHelpers
 import Foundation
 import Meow
 
@@ -24,7 +25,7 @@ import Meow
 /// ```swift
 /// try await queue.queueTask(Reminder(username: "Joannis"))
 /// ```
-public final class MongoQueue {
+public final class MongoQueue: @unchecked Sendable {
     public struct Option: Hashable {
         internal enum _Option: Hashable {
             case uniqueKeysEnabled
@@ -38,10 +39,18 @@ public final class MongoQueue {
     internal let collection: MongoCollection
     internal let logger = Logger(label: "org.openkitten.mongo-queues")
     private var knownTypes = [KnownType]()
-    private var started = false
-    private var serverHasData = true
+    private let _started = NIOLockedValueBox(false)
+    private var started: Bool {
+        get { _started.withLockedValue { $0 } }
+        set { _started.withLockedValue  { $0 = newValue } }
+    }
+    private let _serverHasData = NIOLockedValueBox(true)
+    private var serverHasData: Bool {
+        get { _serverHasData.withLockedValue { $0 } }
+        set { _serverHasData.withLockedValue  { $0 = newValue } }
+    }
+    private let checkServerNotifications = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(2))
     private var maxParallelJobs = 1
-    private var task: Task<Void, Never>?
     public var newTaskPollingFrequency = NIO.TimeAmount.milliseconds(1000)
     public let options: Set<Option>
 
@@ -59,7 +68,12 @@ public final class MongoQueue {
         self.options = []
     }
 
+    private func assertNotRunning(_ function: String = #function) {
+        assert(!started, "Do not use `\(function)` while the queue is running")
+    }
+
     public func setMaxParallelJobs(to max: Int) {
+        assertNotRunning()
         maxParallelJobs = max
     }
     
@@ -71,6 +85,7 @@ public final class MongoQueue {
         _ type: T.Type,
         context: T.ExecutionContext
     ) {
+        assertNotRunning()
         knownTypes.append(KnownType(type: type, queue: self, logger: logger, context: context))
     }
     
@@ -242,39 +257,48 @@ public final class MongoQueue {
         }
         
         started = true
-        
-        // If another instance crashed, causing a stale task, this ensures the task gets requeued
-        task = Task { [weak self] in
-            repeat {
-                guard let queue = self else {
-                    return
-                }
-                
-                _ = try? await queue.findAndRequeueStaleTasks()
-                _ = try? await Task.sleep(nanoseconds: UInt64(queue.stalledTaskPollingFrequency.nanoseconds))
-            } while !Task.isCancelled
-        }
-        
-        let pool = collection.database.pool
 
         try await ensureIndexes()
+        try await withThrowingTaskGroup(of: Void.self) { taskGroup in
+            taskGroup.addTask {
+                while !Task.isCancelled {
+                    _ = try? await self.findAndRequeueStaleTasks()
+                    try await Task.sleep(nanoseconds: UInt64(self.stalledTaskPollingFrequency.nanoseconds))
+                }
+            }
+            
+            taskGroup.addTask {
+                let pool = self.collection.database.pool
 
-        if
-            let wireVersion = await pool.wireVersion,
-            wireVersion.supportsCollectionChangeStream,
-            let hosts = try await pool.next(for: .writable).serverHandshake?.hosts,
-            hosts.count > 0
-        {
-            try await cursorInitiatedTick()
-            try await self.startChangeStreamTicks()
-        } else {
-            try await self.sleepBasedTick()
+                if
+                    let wireVersion = await pool.wireVersion,
+                    wireVersion.supportsCollectionChangeStream,
+                    let hosts = try await pool.next(for: .writable).serverHandshake?.hosts,
+                    hosts.count > 0
+                {
+                    // Change stream ticks only work on change-stream supporting MongoDB versions
+                    // And require the setup to be a replica set
+                    try await self.startChangeStreamTicks()
+                } else {
+                    try await self.startSleepBasedTicks()
+                }
+            }
+
+            taskGroup.addTask {
+                for await () in self.checkServerNotifications.stream {
+                    try? await self.tick()
+                }
+            }
+
+            try await taskGroup.next()
+            taskGroup.cancelAll()
         }
     }
     
     /// Stops the queue. This will return immediately and the queue will stop running.
     public func shutdown() {
         self.started = false
+        self.checkServerNotifications.continuation.finish()
     }
 
     /// - Note: Gets called automatically when you `run` the application.
@@ -293,73 +317,68 @@ public final class MongoQueue {
         }
     }
 
+    private func signalHasData() {
+        serverHasData = true
+        checkServerNotifications.continuation.yield()
+    }
+
     private func startChangeStreamTicks() async throws {
-        // Using change stream cursor based polling
-        var options = ChangeStreamOptions()
-        options.maxAwaitTimeMS = 50
-        var cursor = try await collection.watch(options: options, type: TaskModel.self)
-        cursor.setGetMoreInterval(to: newTaskPollingFrequency)
-        let iterator = cursor.forEach { change in
-            if change.operationType == .insert || change.operationType == .update || change.operationType == .replace {
-                // Dataset changed, retry
-                if !self.serverHasData {
-                    self.serverHasData = true
-                    Task {
-                        try await self.cursorInitiatedTick()
+        while !Task.isCancelled, self.started {
+            do {
+                // Kick off the first tick, because we might already have backlog
+                try await self.tick()
+
+                try await withThrowingTaskGroup(of: Void.self) { taskGroup in
+                    taskGroup.addTask {
+                        try await self.startSleepBasedTicks()
                     }
+                    taskGroup.addTask { [collection] in
+                        // Using change stream cursor based polling
+                        var options = ChangeStreamOptions()
+                        options.maxAwaitTimeMS = 50
+                        var changeStream = try await collection.watch(options: options, type: TaskModel.self)
+                        changeStream.setGetMoreInterval(to: self.newTaskPollingFrequency)
+                        for try await change in changeStream where change.operationType.requiresPolling {
+                            // Dataset changed, retry
+                            self.signalHasData()
+                        }
+                    }
+
+                    // Wait for one of the two to stop or fail
+                    // Then unwind the rest
+                    try await taskGroup.next()
+                    taskGroup.cancelAll()
                 }
-            }
-            
-            return self.started
-        }
-        
-        // Kick off the first tick, because we might immediately have work
-        try await self.cursorInitiatedTick()
-        
-        // The change stream only observes _changes_ to datasets
-        // That allows us to respond to new tasks rapidly
-        // We still want background ticks so that a 
-        let backgroundTicks = Task {
-            try await self.sleepBasedTick()
-        }
-        
-        do {
-            // Ideally, this is where we stay
-            try await iterator.value
-        } catch {}
-        
-        backgroundTicks.cancel()
-        
-        if self.started {
-            // Restart Change Stream
-            try await startChangeStreamTicks()
+            } catch {}
         }
     }
     
-    private func cursorInitiatedTick() async throws {
+    private func tick() async throws {
         do {
-            switch try await self.runNextTask() {
-            case .taskFailure(let error):
-                logger.debug("Failed to run task: \(error)")
-                fallthrough
-            case .taskSuccessful:
-                Task {
-                    try await self.cursorInitiatedTick()
+            repeat {
+                switch try await self.runNextTask() {
+                case .taskFailure(let error):
+                    logger.debug("Failed to run task: \(error)")
+                    fallthrough
+                case .taskSuccessful:
+                    serverHasData = true
+                case .noneExecuted:
+                    serverHasData = false
                 }
-            case .noneExecuted:
-                serverHasData = false
-            }
+            } while !Task.isCancelled && serverHasData
         } catch {
             // Task execution failed due to a MongoDB error
             // Otherwise the return type would specify the task status
-            logger.error("Failed to run next task: \(error)")
+            logger.error("Failed to get next task: \(error)")
             serverHasData = false
         }
     }
     
-    private func sleepBasedTick() async throws {
-        while started {
+    /// Used when there's no possibility of opening a ChangeStream
+    private func startSleepBasedTicks() async throws {
+        while started && !Task.isCancelled {
             if !serverHasData {
+                // Delay a bit, so we don't overload MongoDB with useless requests
                 try await Task.sleep(nanoseconds: UInt64(newTaskPollingFrequency.nanoseconds))
             }
 
@@ -391,7 +410,7 @@ public final class MongoQueue {
             throw MongoQueueError.taskCreationFailed
         }
         
-        serverHasData = true
+        self.signalHasData()
     }
     
     private func findAndRequeueStaleTasks() async throws {
@@ -428,6 +447,17 @@ public final class MongoQueue {
             ]).execute()
         } catch {
             self.logger.error("Failed to dequeue stale task id \(task._id) of type \(task.category)")
+        }
+    }
+}
+
+extension ChangeStreamNotification.OperationType {
+    internal var requiresPolling: Bool {
+        switch self {
+        case .insert, .update, .replace:
+            return true
+        case .delete, .invalidate, .drop, .dropDatabase, .rename:
+            return false
         }
     }
 }
