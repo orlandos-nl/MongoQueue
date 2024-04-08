@@ -41,8 +41,8 @@ internal struct KnownType {
         } catch {
             logger.error("Task of category \"\(T.category)\" has changed metadata format")
             queue.jobsInvalid.increment()
-            queue.jobsRemoved.increment()
             try await collection.deleteOne(where: "_id" == task._id)
+            queue.jobsRemoved.increment()
             throw error
         }
         
@@ -52,7 +52,6 @@ internal struct KnownType {
         case .scheduled(let scheduleConfig):
             if let executeBefore = scheduleConfig.executeBefore, executeBefore < Date() {
                 queue.jobsExpired.increment()
-                queue.jobsRemoved.increment()
 
                 logger.info("Task of category \"\(T.category)\" expired and will not be executed")
                 do {
@@ -60,6 +59,7 @@ internal struct KnownType {
                     var concern = WriteConcern()
                     concern.acknowledgement = .majority
                     try await collection.deleteOne(where: "_id" == task._id, writeConcern: concern)
+                    queue.jobsRemoved.increment()
                 } catch {
                     logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
                 }
@@ -69,7 +69,6 @@ internal struct KnownType {
             // No filters exist (yet) that prevent a task from executing
             if let deadline = recurringConfig.deadline, recurringConfig.scheduledDate.addingTimeInterval(deadline) < Date() {
                 queue.jobsExpired.increment()
-                queue.jobsRemoved.increment()
 
                 logger.info("Task of category \"\(T.category)\" expired and will not be executed")
                 do {
@@ -77,6 +76,7 @@ internal struct KnownType {
                     var concern = WriteConcern()
                     concern.acknowledgement = .majority
                     try await collection.deleteOne(where: "_id" == task._id, writeConcern: concern)
+                    queue.jobsRemoved.increment()
                 } catch {
                     logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
                 }
@@ -125,8 +125,6 @@ internal struct KnownType {
             let onFailure = try await metadata.onExecutionFailure(failureContext: failureContext)
             
             func applyRemoval(_ removal: TaskRemovalAction) async throws {
-                queue.jobsRemoved.increment()
-
                 switch removal.raw {
                 case .softDelete:
                     task.status = .dequeued
@@ -145,6 +143,7 @@ internal struct KnownType {
                         throw MongoQueueError.dequeueTaskFailed
                     }
                 }
+                queue.jobsRemoved.increment()
             }
             
             switch onFailure.raw {
@@ -158,10 +157,10 @@ internal struct KnownType {
                     task.status = .scheduled
                     task.execution = nil
                     
-                    queue.jobsEnteredRetryQueue.increment()
                     guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
                         throw MongoQueueError.reschedulingFailedTaskFailed
                     }
+                    queue.jobsRequeued.increment()
                 }
             case .retryAfter(let nextInterval, maxAttempts: let maxAttempts, let removal):
                 if let maxAttempts = maxAttempts, task.attempts >= maxAttempts {
@@ -172,10 +171,10 @@ internal struct KnownType {
                     task.execution = nil
                     task.executeAfter = Date().addingTimeInterval(nextInterval)
 
-                    queue.jobsEnteredRetryQueue.increment()
                     guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
                         throw MongoQueueError.reschedulingFailedTaskFailed
                     }
+                    queue.jobsRequeued.increment()
                 }
             }
             

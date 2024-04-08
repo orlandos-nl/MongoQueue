@@ -56,7 +56,7 @@ public final class MongoQueue: @unchecked Sendable {
     package let jobsRan = Counter(label: "org.orlandos-nl.mongoqueue.jobsRan")
     package let jobsSucceeded = Counter(label: "org.orlandos-nl.mongoqueue.jobsSucceeded")
     package let jobsInvalid = Counter(label: "org.orlandos-nl.mongoqueue.jobsIgnored")
-    package let jobsEnteredRetryQueue = Counter(label: "org.orlandos-nl.mongoqueue.jobsEnteredRetryQueue")
+    package let jobsRequeued = Counter(label: "org.orlandos-nl.mongoqueue.jobsRequeued")
     package let jobsExpired = Counter(label: "org.orlandos-nl.mongoqueue.jobsExpired")
     package let jobsRemoved = Counter(label: "org.orlandos-nl.mongoqueue.jobsRemoved")
     package let jobsKilled = Counter(label: "org.orlandos-nl.mongoqueue.jobsKilled")
@@ -457,13 +457,13 @@ public final class MongoQueue: @unchecked Sendable {
     private func requeueStaleTask(_ task: TaskModel) async {
         self.logger.debug("Dequeueing stale task id \(task._id) of type \(task.category)")
         do {
-            jobsKilled.increment()
             _ = try await self.collection.findOneAndUpdate(where: "_id" == task._id, to: [
                 "$set": [
                     "status": TaskStatus.scheduled.raw.rawValue,
                     "execution": Null()
                 ] as Document
             ]).execute()
+            jobsKilled.increment()
         } catch {
             self.logger.error("Failed to dequeue stale task id \(task._id) of type \(task.category)")
         }
