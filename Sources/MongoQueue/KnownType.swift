@@ -106,11 +106,15 @@ internal struct KnownType {
                     }
                 }
 
-                queue.jobsRan.increment()
-                try await metadata.execute(withContext: context)
-                queue.jobsSucceeded.increment()
-                logger.debug("Successful execution: task \(task._id) of category \"\(T.category)\"")
-                _ = try await metadata._onDequeueTask(task, withContext: context, inQueue: queue)
+                taskGroup.addTask {
+                    queue.jobsRan.increment()
+                    try await metadata.execute(withContext: context)
+                    queue.jobsSucceeded.increment()
+                    logger.debug("Successful execution: task \(task._id) of category \"\(T.category)\"")
+                    _ = try await metadata._onDequeueTask(task, withContext: context, inQueue: queue)
+                }
+
+                try await taskGroup.next()
                 taskGroup.cancelAll()
             }
         } catch {
