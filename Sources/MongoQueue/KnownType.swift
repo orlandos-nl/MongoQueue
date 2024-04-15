@@ -91,7 +91,7 @@ internal struct KnownType {
             
             // We're early on the updates, so that we don't get dequeued
             let interval = Swift.max(task.maxTaskDuration - 15, 1)
-            try await withThrowingTaskGroup(of: Void.self) { taskGroup in
+            try await withThrowingTaskGroup(of: T.self) { taskGroup in
                 taskGroup.addTask {
                     while !Task.isCancelled {
                         try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
@@ -104,17 +104,25 @@ internal struct KnownType {
                             ]
                         ).execute()
                     }
+
+                    throw CancellationError()
                 }
 
-                taskGroup.addTask {
+                taskGroup.addTask { [metadata, task] in
+                    var metadata = metadata
                     queue.jobsRan.increment()
                     try await metadata.execute(withContext: context)
                     queue.jobsSucceeded.increment()
                     logger.debug("Successful execution: task \(task._id) of category \"\(T.category)\"")
                     _ = try await metadata._onDequeueTask(task, withContext: context, inQueue: queue)
+                    return metadata
                 }
 
-                try await taskGroup.next()
+                guard let _metadata = try await taskGroup.next() else {
+                    throw CancellationError()
+                }
+
+                metadata = _metadata
                 taskGroup.cancelAll()
             }
         } catch {
