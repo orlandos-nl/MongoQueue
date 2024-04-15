@@ -40,7 +40,9 @@ internal struct KnownType {
             metadata = try BSONDecoder().decode(type, from: task.metadata)
         } catch {
             logger.error("Task of category \"\(T.category)\" has changed metadata format")
+            queue.jobsInvalid.increment()
             try await collection.deleteOne(where: "_id" == task._id)
+            queue.jobsRemoved.increment()
             throw error
         }
         
@@ -49,12 +51,15 @@ internal struct KnownType {
         switch taskConfig {
         case .scheduled(let scheduleConfig):
             if let executeBefore = scheduleConfig.executeBefore, executeBefore < Date() {
+                queue.jobsExpired.increment()
+
                 logger.info("Task of category \"\(T.category)\" expired and will not be executed")
                 do {
                     // TODO: We assume this succeeds, but what if it does not?
                     var concern = WriteConcern()
                     concern.acknowledgement = .majority
                     try await collection.deleteOne(where: "_id" == task._id, writeConcern: concern)
+                    queue.jobsRemoved.increment()
                 } catch {
                     logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
                 }
@@ -63,12 +68,15 @@ internal struct KnownType {
         case .recurring(let recurringConfig):
             // No filters exist (yet) that prevent a task from executing
             if let deadline = recurringConfig.deadline, recurringConfig.scheduledDate.addingTimeInterval(deadline) < Date() {
+                queue.jobsExpired.increment()
+
                 logger.info("Task of category \"\(T.category)\" expired and will not be executed")
                 do {
                     // TODO: We assume this succeeds, but what if it does not?
                     var concern = WriteConcern()
                     concern.acknowledgement = .majority
                     try await collection.deleteOne(where: "_id" == task._id, writeConcern: concern)
+                    queue.jobsRemoved.increment()
                 } catch {
                     logger.critical("Failed to delete task \(task._id) of category \"\(T.category))\" after execution: \(error.localizedDescription)")
                 }
@@ -83,25 +91,42 @@ internal struct KnownType {
             
             // We're early on the updates, so that we don't get dequeued
             let interval = Swift.max(task.maxTaskDuration - 15, 1)
-            let executionUpdates = Task {
-                while !Task.isCancelled {
-                    try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
-                    _ = try await collection.findOneAndUpdate(
-                        where: "_id" == taskId  ,
-                        to: [
-                            "$set": [
-                                "execution.lastUpdate": Date()
+            try await withThrowingTaskGroup(of: T.self) { taskGroup in
+                taskGroup.addTask {
+                    while !Task.isCancelled {
+                        try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
+                        _ = try await collection.findOneAndUpdate(
+                            where: "_id" == taskId  ,
+                            to: [
+                                "$set": [
+                                    "execution.lastUpdate": Date()
+                                ]
                             ]
-                        ]
-                    ).execute()
+                        ).execute()
+                    }
+
+                    throw CancellationError()
                 }
+
+                taskGroup.addTask { [metadata, task] in
+                    var metadata = metadata
+                    queue.jobsRan.increment()
+                    try await metadata.execute(withContext: context)
+                    queue.jobsSucceeded.increment()
+                    logger.debug("Successful execution: task \(task._id) of category \"\(T.category)\"")
+                    _ = try await metadata._onDequeueTask(task, withContext: context, inQueue: queue)
+                    return metadata
+                }
+
+                guard let _metadata = try await taskGroup.next() else {
+                    throw CancellationError()
+                }
+
+                metadata = _metadata
+                taskGroup.cancelAll()
             }
-            
-            defer { executionUpdates.cancel() }
-            try await metadata.execute(withContext: context)
-            logger.debug("Successful execution: task \(task._id) of category \"\(T.category)\"")
-            _ = try await metadata._onDequeueTask(task, withContext: context, inQueue: queue)
         } catch {
+            queue.jobsFailed.increment()
             logger.debug("Execution failure for task \(task._id) in category \"\(T.category))\": \(error.localizedDescription)")
             let failureContext = QueuedTaskFailure(
                 executionContext: context,
@@ -130,6 +155,7 @@ internal struct KnownType {
                         throw MongoQueueError.dequeueTaskFailed
                     }
                 }
+                queue.jobsRemoved.increment()
             }
             
             switch onFailure.raw {
@@ -146,6 +172,7 @@ internal struct KnownType {
                     guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
                         throw MongoQueueError.reschedulingFailedTaskFailed
                     }
+                    queue.jobsRequeued.increment()
                 }
             case .retryAfter(let nextInterval, maxAttempts: let maxAttempts, let removal):
                 if let maxAttempts = maxAttempts, task.attempts >= maxAttempts {
@@ -155,6 +182,11 @@ internal struct KnownType {
                     task.status = .scheduled
                     task.execution = nil
                     task.executeAfter = Date().addingTimeInterval(nextInterval)
+
+                    guard try await collection.upsertEncoded(task, where: "_id" == task._id).updatedCount == 1 else {
+                        throw MongoQueueError.reschedulingFailedTaskFailed
+                    }
+                    queue.jobsRequeued.increment()
                 }
             }
             

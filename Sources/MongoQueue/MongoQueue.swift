@@ -3,6 +3,8 @@ import MongoCore
 import NIOConcurrencyHelpers
 import Foundation
 import Meow
+import Tracing
+import Metrics
 
 /// A MongoQueue is a queue that uses MongoDB as a backend for storing tasks. It is designed to be used in a distributed environment.
 ///
@@ -51,6 +53,14 @@ public final class MongoQueue: @unchecked Sendable {
     }
     private let checkServerNotifications = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(2))
     private var maxParallelJobs = 1
+    package let jobsRan = Counter(label: "org.orlandos-nl.mongoqueue.jobsRan")
+    package let jobsSucceeded = Counter(label: "org.orlandos-nl.mongoqueue.jobsSucceeded")
+    package let jobsInvalid = Counter(label: "org.orlandos-nl.mongoqueue.jobsIgnored")
+    package let jobsRequeued = Counter(label: "org.orlandos-nl.mongoqueue.jobsRequeued")
+    package let jobsExpired = Counter(label: "org.orlandos-nl.mongoqueue.jobsExpired")
+    package let jobsRemoved = Counter(label: "org.orlandos-nl.mongoqueue.jobsRemoved")
+    package let jobsKilled = Counter(label: "org.orlandos-nl.mongoqueue.jobsKilled")
+    package let jobsFailed = Counter(label: "org.orlandos-nl.mongoqueue.jobsFailed")
     public var newTaskPollingFrequency = NIO.TimeAmount.milliseconds(1000)
     public let options: Set<Option>
 
@@ -148,47 +158,51 @@ public final class MongoQueue: @unchecked Sendable {
     }
     
     func runNextTask() async throws -> TaskExecutionResult {
-        let context = try BSONEncoder().encode(TaskModel.ExecutingContext())
-        var writeConcern = WriteConcern()
-        writeConcern.acknowledgement = .majority
-        
-        var filter: Document = "status" == TaskStatus.scheduled.raw.rawValue
-        let executeAfterFilter: Document = "executeAfter" <= Date()
-        filter = (filter && executeAfterFilter).makeDocument()
-        
-        let reply = try await collection.findOneAndUpdate(
-            where: filter,
-            to: [
-                "$set": [
-                    "status": TaskStatus.executing.raw.rawValue,
-                    "execution": context
-                ] as Document
-            ],
-            returnValue: .modified
-        )
-        .sort([
-            "priority": .descending,
-            "executeBefore": .ascending,
-            "creationDate": .ascending
-        ])
-        .writeConcern(writeConcern)
-        .execute()
-        
-        guard let taskDocument = reply.value else {
-            // No task found
-            return .noneExecuted
-        }
-        
-        var task = try BSONDecoder().decode(TaskModel.self, from: taskDocument)
-        guard let knownType = knownTypes.first(where: { $0.category == task.category }) else {
-            throw MongoQueueError.unknownTaskCategory
-        }
-        
-        do {
-            try await knownType.performTask(&task)
-            return .taskSuccessful
-        } catch {
-            return .taskFailure(error)
+        try await withSpan("MongoQueue.\(#function)") { span in
+            let context = try BSONEncoder().encode(TaskModel.ExecutingContext())
+            var writeConcern = WriteConcern()
+            writeConcern.acknowledgement = .majority
+
+            var filter: Document = "status" == TaskStatus.scheduled.raw.rawValue
+            let executeAfterFilter: Document = "executeAfter" <= Date()
+            filter = (filter && executeAfterFilter).makeDocument()
+
+            let reply = try await collection.findOneAndUpdate(
+                where: filter,
+                to: [
+                    "$set": [
+                        "status": TaskStatus.executing.raw.rawValue,
+                        "execution": context
+                    ] as Document
+                ],
+                returnValue: .modified
+            )
+                .sort([
+                    "priority": .descending,
+                    "executeBefore": .ascending,
+                    "creationDate": .ascending
+                ])
+                .writeConcern(writeConcern)
+                .execute()
+
+            guard let taskDocument = reply.value else {
+                // No task found
+                return .noneExecuted
+            }
+
+            var task = try BSONDecoder().decode(TaskModel.self, from: taskDocument)
+            guard let knownType = knownTypes.first(where: { $0.category == task.category }) else {
+                logger.error("Job of type '\(task.category)' is not known and ignored")
+                jobsInvalid.increment()
+                throw MongoQueueError.unknownTaskCategory
+            }
+
+            do {
+                try await knownType.performTask(&task)
+                return .taskSuccessful
+            } catch {
+                return .taskFailure(error)
+            }
         }
     }
     
@@ -259,6 +273,7 @@ public final class MongoQueue: @unchecked Sendable {
         started = true
 
         try await ensureIndexes()
+        
         try await withThrowingTaskGroup(of: Void.self) { taskGroup in
             taskGroup.addTask {
                 while !Task.isCancelled {
@@ -286,7 +301,7 @@ public final class MongoQueue: @unchecked Sendable {
 
             taskGroup.addTask {
                 for await () in self.checkServerNotifications.stream {
-                    try? await self.tick()
+                    try? await self.findTasks()
                 }
             }
 
@@ -326,7 +341,7 @@ public final class MongoQueue: @unchecked Sendable {
         while !Task.isCancelled, self.started {
             do {
                 // Kick off the first tick, because we might already have backlog
-                try await self.tick()
+                try await self.findTasks()
 
                 try await withThrowingTaskGroup(of: Void.self) { taskGroup in
                     taskGroup.addTask {
@@ -353,19 +368,22 @@ public final class MongoQueue: @unchecked Sendable {
         }
     }
     
-    private func tick() async throws {
+    private func findTasks() async throws {
         do {
-            repeat {
-                switch try await self.runNextTask() {
-                case .taskFailure(let error):
-                    logger.debug("Failed to run task: \(error)")
-                    fallthrough
-                case .taskSuccessful:
-                    serverHasData = true
-                case .noneExecuted:
-                    serverHasData = false
-                }
-            } while !Task.isCancelled && serverHasData
+            try await withSpan("MongoQueue.\(#function)") { span in
+                repeat {
+                    switch try await self.runNextTask() {
+                    case .taskFailure(let error):
+                        span.recordError(error)
+                        logger.debug("Failed to run task: \(error)")
+                        fallthrough
+                    case .taskSuccessful:
+                        serverHasData = true
+                    case .noneExecuted:
+                        serverHasData = false
+                    }
+                } while !Task.isCancelled && serverHasData
+            }
         } catch {
             // Task execution failed due to a MongoDB error
             // Otherwise the return type would specify the task status
@@ -445,6 +463,7 @@ public final class MongoQueue: @unchecked Sendable {
                     "execution": Null()
                 ] as Document
             ]).execute()
+            jobsKilled.increment()
         } catch {
             self.logger.error("Failed to dequeue stale task id \(task._id) of type \(task.category)")
         }
