@@ -164,6 +164,6 @@ If the deadline is reached, other workers can (and will) dequeue the task and pu
 
 Due to this system, it is adviced to set urgent and short-lived tasks to a shorter `maxTaskDuration`. But take network connectivity into consideration, as setting it very low (like 5 seconds) may cause the deadline to be reached before it can be prolonged.
 
-If the task is dequeued, your task model gets a notificatio in `func onDequeueTask(withId taskId: ObjectId, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws`.
+If the task is dequeued, your task model gets a notification in `func onDequeueTask(withId taskId: ObjectId, withContext context: ExecutionContext, inQueue queue: MongoQueue) async throws`.
 
 Likewise, on execution failure you get a call on `func onExecutionFailure(failureContext: QueuedTaskFailure<ExecutionContext>) async throws -> TaskExecutionFailureAction` where you can decide whether to requeue, and whether to apply a maximum amount of attempts.
