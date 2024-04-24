@@ -14,7 +14,7 @@ import Meow
 ///   typealias ExecutionContext = SMTPClient
 ///
 ///   // Stored properties are encoded to MongoDB
-///   // When the task runs, they'll be decodd into a new `Reminder` instance
+///   // When the task runs, they'll be decoded into a new `Reminder` instance
 ///   // After which `execute` will be called
 ///   let username: String
 ///
