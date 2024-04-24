@@ -120,7 +120,7 @@ private struct MongoQueueStorageKey: StorageKey {
 }
 
 extension Application {
-  public var mongo: MongoQueue {
+  public var queue: MongoQueue {
     get {
       storage[MongoQueueStorageKey.self]!
     }
